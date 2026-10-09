@@ -261,6 +261,8 @@ FACE_LANDMARKS = {
     "Male": {
         # front view: name -> (px, py); model side: (x, z) taken from Landmarks
         "front": {"eye_l": (305, 318), "eye_r": (150, 318), "nose_tip": (228, 397), "mouth": (228, 478),
+                  "eye_l_in": (262, 322), "eye_l_out": (352, 316), "eye_r_in": (195, 322), "eye_r_out": (105, 316),
+                  "lips_top": (228, 464), "lips_bottom": (228, 497),
                   "corner_l": (282, 481), "corner_r": (175, 481), "chin_bottom": (228, 695),
                   "ear_l": (430, 355), "ear_r": (28, 355), "hairline": (228, 195), "head_top": (228, 60),
                   "temple_l": (375, 235), "temple_r": (80, 235), "neck_l": (330, 640), "neck_r": (125, 640)},
@@ -280,7 +282,11 @@ def model_face_points(lm, head_pts, view):
     r = lm.eye_radius
     chin_bottom_z = lm.chin[2] - 0.022
     if view == "front":
+        half_open = 0.95 * r
         return {"eye_l": (lm.eye_l[0], lm.eye_l[2]), "eye_r": (lm.eye_r[0], lm.eye_r[2]),
+                "eye_l_in": (lm.eye_l[0] - half_open, lm.eye_l[2] - 0.001), "eye_l_out": (lm.eye_l[0] + half_open, lm.eye_l[2] + 0.001),
+                "eye_r_in": (lm.eye_r[0] + half_open, lm.eye_r[2] - 0.001), "eye_r_out": (lm.eye_r[0] - half_open, lm.eye_r[2] + 0.001),
+                "lips_top": (0.0, lm.lips_top), "lips_bottom": (0.0, lm.lips_bottom),
                 "nose_tip": (0.0, lm.nose_tip[2]), "mouth": (0.0, 0.5 * (lm.lips_top + lm.lips_bottom)),
                 "corner_l": (lm.mouth_half_width, 0.5 * (lm.lips_top + lm.lips_bottom)),
                 "corner_r": (-lm.mouth_half_width, 0.5 * (lm.lips_top + lm.lips_bottom)),
@@ -328,7 +334,8 @@ def project_head_view(P, N, img, lm, head_pts, body_name, view):
     np.maximum.at(nearest, cell, depth)
     visible = depth >= nearest[cell] - 0.01
     inside = (uv[:, 0] > 0) & (uv[:, 0] < img.shape[1] - 1) & (uv[:, 1] > 0) & (uv[:, 1] < img.shape[0] - 1)
-    return colour, facing * visible * inside
+    below_chin = pb.smoothstep(lm.chin[2] - 0.075, lm.chin[2] - 0.035, P[:, 2])
+    return colour, facing * visible * inside * below_chin
 
 
 def grade_image(img):
@@ -337,11 +344,18 @@ def grade_image(img):
     lum = luminance(flat)
     sat = flat.max(axis=1) - flat.min(axis=1)
     skin_px = (lum > 0.3) & (sat > 0.12) & (flat[:, 0] > flat[:, 2])
-    median = np.median(flat[skin_px], axis=0) if skin_px.sum() > 100 else SKIN
-    graded = flat * (SKIN / np.maximum(median, 1e-3))
+    if skin_px.sum() > 100:
+        bright = flat[skin_px][lum[skin_px] >= np.percentile(lum[skin_px], 70)]
+        lit = np.median(bright, axis=0)
+    else:
+        lit = SKIN
+    graded = flat * (SKIN / np.maximum(lit, 1e-3))
     g_lum = luminance(graded)[:, None]
     graded = g_lum + (graded - g_lum) * 0.8
-    return np.clip(graded, 0, 1).reshape(img.shape)
+    # Only skin-coloured pixels are re-tinted; grey cloth, ink and eyes keep their colours.
+    skinness = pb.smoothstep(0.06, 0.16, sat) * pb.smoothstep(0.0, 0.08, flat[:, 0] - flat[:, 2])
+    out = flat * (1 - skinness[:, None]) + graded * skinness[:, None]
+    return np.clip(out, 0, 1).reshape(img.shape)
 
 
 def shadow_bands(colour, shadow):
@@ -355,8 +369,8 @@ def shadow_bands(colour, shadow):
 # replaced with nearby skin so the base head stays plain; hair is a mesh, beard/brows are layers.
 # Regions inside the strip areas that must be kept (the lips sit inside the beard area).
 KEEP_REGIONS = {
-    "Male_FaceFront": [[(168, 456), (288, 456), (292, 502), (228, 510), (164, 502)]],
-    "Male_FaceSide": [[(6, 390), (50, 390), (50, 438), (6, 438)]],
+    "Male_FaceFront": [[(174, 463), (282, 463), (284, 496), (228, 502), (172, 496)]],
+    "Male_FaceSide": [[(8, 398), (46, 398), (46, 434), (8, 434)]],
 }
 
 STRIP_REGIONS = {
@@ -368,8 +382,8 @@ STRIP_REGIONS = {
         [(90, 250), (215, 256), (215, 290), (90, 290)], [(245, 256), (370, 250), (370, 290), (245, 290)],  # brows
     ],
     "Male_FaceSide": [
-        [(0, 0), (466, 0), (466, 330), (445, 420), (400, 470), (300, 400), (250, 360), (245, 300),
-         (235, 250), (200, 215), (150, 180), (100, 165), (55, 180), (0, 230)],       # hair
+        [(0, 0), (466, 0), (466, 330), (445, 420), (400, 470), (300, 400), (250, 380), (235, 320),
+         (205, 250), (180, 215), (150, 180), (100, 165), (55, 180), (0, 230)],       # hair
         [(10, 368), (60, 372), (120, 345), (200, 330), (255, 360), (290, 400), (305, 450), (260, 530),
          (180, 560), (120, 548), (60, 500), (25, 450), (10, 420)],                   # beard + moustache
         [(45, 222), (135, 232), (135, 252), (45, 248)],                             # brow
@@ -444,7 +458,7 @@ def main():
     skin_obj = pb.make_copy(mesh_obj, keep_eyes=False)
     pos = pb.bake(skin_obj, RES, pb.geom_socket("Position"))
     nrm = pb.bake(skin_obj, RES, pb.geom_socket("Normal"))
-    head = pb.bake(skin_obj, RES, pb.attributes_socket(["head", "neck_01", None]))
+    head = pb.bake(skin_obj, RES, pb.attributes_socket(["head", None, None]))
     ao_l = pb.bake(skin_obj, RES, pb.ao_socket(0.15), samples=24)
     valid = pos[:, :, 3].reshape(-1) > 0.5
     P = pos.reshape(-1, 4)[valid][:, :3].copy()
