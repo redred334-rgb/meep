@@ -29,6 +29,7 @@ from PIL import Image, ImageDraw, ImageFilter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import paint_base_body as pb  # noqa: E402
+from comic_paint import CORE_MUL, HALF_MUL, SKIN, luminance  # noqa: E402
 
 REPO_ROOT = pb.REPO_ROOT
 BASE_DIR = pb.BASE_DIR
@@ -250,6 +251,23 @@ def soft_copy(img, mask):
     return np.asarray(pil.filter(ImageFilter.GaussianBlur(14))).astype(np.float32) / 255
 
 
+def grade_to_palette(drawn, shadow):
+    """Match the drawing's skin to the palette (AI drawings run ~2x too saturated), then add the
+    painted half-tone / core shadow bands the drawing lacks."""
+    lum = luminance(drawn)
+    sat = drawn.max(axis=1) - drawn.min(axis=1)
+    skin_px = (lum > 0.35) & (sat > 0.15) & (drawn[:, 0] > drawn[:, 2])
+    median = np.median(drawn[skin_px], axis=0) if skin_px.sum() > 100 else SKIN
+    graded = drawn * (SKIN / np.maximum(median, 1e-3))
+    # Pull saturation down toward the palette (keeps ink dark, since ink has little saturation).
+    g_lum = luminance(graded)[:, None]
+    graded = g_lum + (graded - g_lum) * 0.8
+    half = pb.smoothstep(0.14, 0.22, shadow)[:, None]
+    core = pb.smoothstep(0.32, 0.40, shadow)[:, None]
+    mul = (1.0 + (HALF_MUL - 1.0) * half) * (1.0 + (CORE_MUL / HALF_MUL - 1.0) * core)
+    return np.clip(graded * mul, 0.0, 1.0)
+
+
 def main():
     body_name = sys.argv[sys.argv.index("--") + 1] if "--" in sys.argv else "Male"
     blend_path = os.path.join(BASE_DIR, f"BaseBody_{body_name}.blend")
@@ -265,11 +283,13 @@ def main():
     pos = pb.bake(skin_obj, RES, pb.geom_socket("Position"))
     nrm = pb.bake(skin_obj, RES, pb.geom_socket("Normal"))
     head = pb.bake(skin_obj, RES, pb.attributes_socket(["head", "neck_01", None]))
+    ao_l = pb.bake(skin_obj, RES, pb.ao_socket(0.15), samples=24)
     valid = pos[:, :, 3].reshape(-1) > 0.5
     P = pos.reshape(-1, 4)[valid][:, :3].copy()
     N = nrm.reshape(-1, 4)[valid][:, :3].copy()
     head_w = head.reshape(-1, 4)[valid][:, 0]
-    del pos, nrm, head
+    shadow = 1.0 - ao_l.reshape(-1, 4)[valid][:, 0]
+    del pos, nrm, head, ao_l
 
     colour_f, w_f = project_view(mesh_obj, P, N, front, mirror_x=False)
     if back is not None:
@@ -286,6 +306,7 @@ def main():
     total = np.clip(w_f + w_b, 0, 1)
     drawn = (colour_f * w_f[:, None] + colour_b * w_b[:, None]) / np.maximum(w_f + w_b, 1e-6)[:, None]
     drawn = drawn * total[:, None] + colour_fill * (1 - total)[:, None]
+    drawn = grade_to_palette(drawn, shadow)
 
     base_path = os.path.join(TEX_DIR, f"T_Body_{body_name}_BaseColor_BL.png")
     base = np.asarray(Image.open(base_path).convert("RGB").resize((RES, RES))).astype(np.float32) / 255
