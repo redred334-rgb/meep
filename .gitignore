@@ -1,3 +1,4 @@
 *.blend1
 *.blend@
 __pycache__/
+.cache/
