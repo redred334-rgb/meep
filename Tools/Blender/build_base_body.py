@@ -12,7 +12,7 @@ What you get per body:
     - Eyes kept as part of the mesh so face morphs move them with the sockets
     - Teeth and tongue inside the mouth (M_Mouth), lower teeth and tongue follow the jaw
     - Expression morph targets (Exp_*) for talking and emotes, alongside the face sliders
-    - Material slots: M_Skin, M_Eyes (underwear is painted into the skin texture by
+    - Material slots: M_Skin, M_Eyes, M_Mouth (underwear is painted into the skin texture by
       Tools/Blender/paint_base_body.py)
     - Face customisation morph targets (FaceSlider names below)
     - Vertex colours used as a "hide under clothes" mask:
@@ -24,7 +24,7 @@ Run:
     blender -b -P Tools/Blender/build_base_body.py
 """
 
-import json
+import math
 import os
 import sys
 
@@ -227,9 +227,39 @@ def group_centre(basemesh, group_name):
     return sum(pts, Vector()) / len(pts)
 
 
+def jaw_weight_map(basemesh, hinge, chin):
+    """Per-vertex jaw weights derived from MPFB's mouth-open expression target.
+
+    MPFB's own rigs spread the lower lip over many small muscle bones, so copying their jaw
+    weights tears the lips. The mouth-open target is a hand-made jaw drop instead: the angle
+    each vertex implies about the jaw hinge, relative to the chin's, is how much of the jaw's
+    rotation it should get. Only vertices that move down count, so the upper lip stays put.
+    """
+    keys = basemesh.data.shape_keys.key_blocks
+    basis, mouth_open = keys[0], keys["Exp_MouthOpen"]
+
+    def implied_angle(i):
+        co = basis.data[i].co
+        delta = mouth_open.data[i].co - co
+        if delta.z >= 0.0:
+            return 0.0
+        radius = math.hypot(co.y - hinge.y, co.z - hinge.z)
+        return delta.length / radius if radius > 0.02 else 0.0
+
+    verts = basemesh.data.vertices
+    chin_i = min(range(len(verts)), key=lambda i: (verts[i].co - chin).length)
+    reference = implied_angle(chin_i)
+    weights = {}
+    for i in range(len(verts)):
+        w = min(1.0, implied_angle(i) / reference)
+        if w > 0.0:
+            weights[i] = w
+    return weights
+
+
 def add_face_bones(basemesh, armature):
-    """Jaw and eye bones for talking and eye movement, with MPFB's default-rig jaw weights."""
-    LocationService = mpfb_module("locationservice").LocationService
+    """Jaw and eye bones for talking and eye movement. The jaw pivots where MPFB's default
+    rig puts it (joint-mouth to the chin), with weights taken from the mouth-open target."""
     jaw_tail = basemesh.data.vertices[991].co.copy()  # chin point, as in MPFB's default rig
     bones = {
         "jaw": (group_centre(basemesh, "joint-mouth"), jaw_tail),
@@ -243,23 +273,33 @@ def add_face_bones(basemesh, armature):
     for name, (head, tail) in bones.items():
         eb = armature.data.edit_bones.new(name)
         eb.head, eb.tail = head, tail
+        # Explicit roll, since a bone pointing straight along -Y gets an arbitrary one.
+        # Eyes: local Z up, so Z is yaw (+ looks to the character's left) and X is pitch
+        # (+ looks up). Jaw: local X is the hinge, pointing left, so + opens the mouth.
+        eb.align_roll(Vector((0.0, 0.0, -1.0 if name == "jaw" else 1.0)))
         eb.parent = armature.data.edit_bones["head"]
         eb.use_deform = True
     bpy.ops.object.mode_set(mode='OBJECT')
 
-    weights_path = os.path.join(LocationService.get_mpfb_data("rigs"), "standard", "weights.default.json")
-    with open(weights_path, "r", encoding="utf-8") as f:
-        jaw_weights = json.load(f)["weights"]["jaw"]
     jaw = basemesh.vertex_groups.new(name="jaw")
     head = basemesh.vertex_groups["head"]
     head_idx = head.index
-    for index, weight in jaw_weights:
-        if index >= len(basemesh.data.vertices):
-            continue
+    bone_groups = {g.index for g in basemesh.vertex_groups if g.name in armature.data.bones}
+    for index, weight in jaw_weight_map(basemesh, *bones["jaw"]).items():
         v = basemesh.data.vertices[index]
+        # The jaw takes its weight from the head first; what the head can't give comes
+        # proportionally from the other bones (neck), so every vertex still sums to 1.
+        # Only bone groups count: at this point the vertex is also in MPFB's helper groups.
         head_w = next((g.weight for g in v.groups if g.group == head_idx), 0.0)
-        jaw.add([index], min(weight, max(head_w, weight)), 'REPLACE')
-        head.add([index], max(0.0, head_w - weight), 'REPLACE')
+        from_head = min(head_w, weight)
+        others = [(g.group, g.weight) for g in v.groups if g.group != head_idx and g.group in bone_groups]
+        others_total = sum(w for _, w in others)
+        remaining = weight - from_head
+        scale = (others_total - remaining) / others_total if others_total > 0 and remaining > 0 else 1.0
+        for group_idx, w in others:
+            basemesh.vertex_groups[group_idx].add([index], max(0.0, w * scale), 'REPLACE')
+        head.add([index], head_w - from_head, 'REPLACE')
+        jaw.add([index], weight, 'REPLACE')
     basemesh.vertex_groups.new(name="eye_l")
     basemesh.vertex_groups.new(name="eye_r")
 
@@ -320,9 +360,10 @@ def strip_helpers_keep_eyes(basemesh, bone_names):
     mouth_idx = {groups[g].index: bone for g, bone in MOUTH_GROUPS.items()}
 
     keep = set()
-    eye_verts = set()
-    mouth_verts = set()
     part_bone = {}  # vertex -> the single bone it follows (eyeballs, teeth, tongue)
+    # Vertex indices shift when the helpers are deleted, so each part is tagged in an
+    # attribute (0 body, 1 eyes, 2 mouth) that bmesh carries over to the new mesh.
+    part = basemesh.data.attributes.new("part", 'INT', 'POINT')
     for v in basemesh.data.vertices:
         gids = {g.group for g in v.groups if g.weight > 0.0}
         if body_idx in gids:
@@ -331,11 +372,11 @@ def strip_helpers_keep_eyes(basemesh, bone_names):
         for idx in gids:
             if idx in eye_idx:
                 keep.add(v.index)
-                eye_verts.add(v.index)
+                part.data[v.index].value = 1
                 part_bone[v.index] = eye_idx[idx]
             elif idx in mouth_idx:
                 keep.add(v.index)
-                mouth_verts.add(v.index)
+                part.data[v.index].value = 2
                 part_bone[v.index] = mouth_idx[idx]
 
     for mod in list(basemesh.modifiers):
@@ -365,6 +406,10 @@ def strip_helpers_keep_eyes(basemesh, bone_names):
         elif g.name not in bone_names:
             basemesh.vertex_groups.remove(g)
 
+    part = basemesh.data.attributes["part"]
+    eye_verts = {i for i, p in enumerate(part.data) if p.value == 1}
+    mouth_verts = {i for i, p in enumerate(part.data) if p.value == 2}
+    basemesh.data.attributes.remove(part)
     return eye_verts, mouth_verts
 
 
@@ -398,7 +443,7 @@ def find_underwear_verts(basemesh, armature, bust_z=None):
     return result
 
 
-def assign_materials(basemesh, mouth_verts):
+def assign_materials(basemesh, eye_verts, mouth_verts):
     """M_Skin for the body (underwear is painted into the skin texture), M_Eyes for the eyes,
     M_Mouth for the teeth and tongue.
 
@@ -421,26 +466,10 @@ def assign_materials(basemesh, mouth_verts):
     bm.from_mesh(basemesh.data)
     bm.faces.ensure_lookup_table()
     for f in bm.faces:
-        if all(v.index in mouth_verts for v in f.verts):
+        if all(v.index in eye_verts for v in f.verts):
+            f.material_index = 1
+        elif all(v.index in mouth_verts for v in f.verts):
             f.material_index = 2
-    # The body is one big connected island; each eye is a small separate one.
-    seen = set()
-    for f in bm.faces:
-        if f.index in seen:
-            continue
-        island, stack = [], [f]
-        seen.add(f.index)
-        while stack:
-            cur = stack.pop()
-            island.append(cur)
-            for e in cur.edges:
-                for nf in e.link_faces:
-                    if nf.index not in seen:
-                        seen.add(nf.index)
-                        stack.append(nf)
-        if len(island) < 2000 and island[0].material_index == 0:
-            for face in island:
-                face.material_index = 1
 
     uv_layer = bm.loops.layers.uv.active
     eye_loops = [loop for f in bm.faces if f.material_index == 1 for loop in f.loops]
@@ -507,10 +536,10 @@ def build_body(body_name, macros):
     add_face_bones(basemesh, armature)
     bone_names = {b.name for b in armature.data.bones}
     bust_z = bust_height(basemesh) if macros["gender"] < 0.5 else None
-    _, mouth_verts = strip_helpers_keep_eyes(basemesh, bone_names)
+    eye_verts, mouth_verts = strip_helpers_keep_eyes(basemesh, bone_names)
     pose_to_t_pose(basemesh, armature)
     underwear_verts = find_underwear_verts(basemesh, armature, bust_z)
-    assign_materials(basemesh, mouth_verts)
+    assign_materials(basemesh, eye_verts, mouth_verts)
     paint_hide_mask(basemesh, underwear_verts)
     export(basemesh, armature, fbx_path, blend_path, mesh_name)
 
