@@ -351,7 +351,28 @@ def shadow_bands(colour, shadow):
     return np.clip(colour * mul, 0.0, 1.0)
 
 
-def strip_hair(img):
+# Regions (pixel polygons) of hair, beard and brows in each face drawing. Anything inside is
+# replaced with nearby skin so the base head stays plain; hair is a mesh, beard/brows are layers.
+STRIP_REGIONS = {
+    "Male_FaceFront": [
+        [(0, 0), (445, 0), (445, 330), (400, 262), (350, 215), (300, 200), (228, 192), (160, 200),
+         (100, 215), (45, 262), (0, 330)],                                            # hair
+        [(28, 400), (95, 452), (165, 442), (228, 438), (292, 442), (360, 452), (425, 400), (420, 470),
+         (395, 575), (340, 690), (228, 712), (118, 690), (60, 575), (30, 470)],      # beard + moustache
+        [(90, 252), (215, 258), (215, 302), (90, 302)], [(245, 258), (370, 252), (370, 302), (245, 302)],  # brows
+    ],
+    "Male_FaceSide": [
+        [(0, 0), (466, 0), (466, 330), (445, 420), (400, 470), (300, 400), (250, 360), (245, 300),
+         (235, 250), (200, 215), (150, 180), (100, 165), (55, 180), (0, 230)],       # hair
+        [(10, 368), (60, 372), (120, 345), (200, 330), (255, 360), (290, 400), (305, 450), (260, 530),
+         (180, 560), (120, 548), (60, 500), (25, 450), (10, 420)],                   # beard + moustache
+        [(45, 222), (135, 232), (135, 256), (45, 250)],                             # brow
+    ],
+    "Male_Back": [[(230, 0), (370, 0), (370, 115), (230, 115)]],                    # back of the hair
+}
+
+
+def strip_hair(img, name=None):
     """Replace hair, beard and brows in a face drawing with nearby skin, so the base head is plain.
 
     Hair/beard/brow pixels are the large very dark masses (ink lines are dark too, but thin: a
@@ -362,10 +383,21 @@ def strip_hair(img):
     dark = (lum < 0.16) & body
     mass = morph(morph(dark, 4, False), 7, True)            # open: drop thin ink, keep masses
     mass = morph(morph(mass, 3, True), 3, False)            # close small holes
+    if name in STRIP_REGIONS:
+        region = Image.new("L", (img.shape[1], img.shape[0]), 0)
+        for poly in STRIP_REGIONS[name]:
+            ImageDraw.Draw(region).polygon(poly, fill=255)
+        mass |= (np.asarray(region) > 0) & body
+    mass = morph(mass, 6, True)                             # take a margin of the lighter strokes too
     skin = body & ~mass
-    filled = pb.dilate(img, skin, 120)
+    # Seed the fill only from clean skin well away from the hair edge, then smooth it so the
+    # filled area is a soft skin tone rather than streaks.
+    seed = morph(skin, 8, False)
+    lum_ok = (lum > 0.3)
+    seed &= lum_ok
+    filled = pb.dilate(img, seed, 400)
     blur = np.asarray(Image.fromarray((np.clip(filled, 0, 1) * 255).astype(np.uint8))
-                      .filter(ImageFilter.GaussianBlur(9))).astype(np.float32) / 255
+                      .filter(ImageFilter.GaussianBlur(22))).astype(np.float32) / 255
     out = np.where(mass[:, :, None], blur, img)
     return out, mass.astype(np.float32)
 
@@ -376,7 +408,7 @@ def load_ref(name, plain_head=False):
         return None
     img = np.asarray(Image.open(path).convert("RGB")).astype(np.float32) / 255
     if plain_head:
-        img, mass = strip_hair(img)
+        img, mass = strip_hair(img, name)
         Image.fromarray((mass * 255).astype(np.uint8)).save(os.path.join(REF_DIR, name + "_HairMask.png"))
     return grade_image(img)
 
