@@ -10,8 +10,8 @@ What you get per body:
     - Both bodies use the same skeleton, so animations and clothes setups are shared
     - Unreal-style skeleton (root, pelvis, spine_01..03, thigh_l, ...)
     - Eyes kept as part of the mesh so face morphs move them with the sockets
-    - Material slots: M_Skin, M_Eyes, M_Underwear (plain briefs, plus a sports bra on the
-      female, painted onto the body)
+    - Material slots: M_Skin, M_Eyes (underwear is painted into the skin texture by
+      Tools/Blender/paint_base_body.py)
     - Face customisation morph targets (FaceSlider names below)
     - Vertex colours used as a "hide under clothes" mask:
           R = torso, G = arms, B = legs, A = feet (underwear areas are never hidden)
@@ -114,6 +114,10 @@ UNDERWEAR_BONES = ("pelvis", "spine_01", "thigh_l", "thigh_r")
 BRA_BONES = ("spine_02", "spine_03", "clavicle_l", "clavicle_r")
 
 EYE_GROUPS = ("helper-l-eye", "helper-r-eye")
+
+# MPFB vertex groups kept (renamed mask_*) so the texture painter can find these areas.
+# They don't match any bone, so the FBX exporter leaves them out.
+PAINT_GROUPS = ("lips", "fingernails", "toenails", "ears", "scalp", "nipple")
 
 
 def mpfb_module(name):
@@ -271,7 +275,9 @@ def strip_helpers_keep_eyes(basemesh, bone_names):
     basemesh.data.update()
 
     for g in list(basemesh.vertex_groups):
-        if g.name not in bone_names:
+        if g.name in PAINT_GROUPS:
+            g.name = "mask_" + g.name
+        elif g.name not in bone_names:
             basemesh.vertex_groups.remove(g)
 
     return eye_verts
@@ -307,11 +313,14 @@ def find_underwear_verts(basemesh, armature, bust_z=None):
     return result
 
 
-def assign_materials(basemesh, underwear_verts):
+def assign_materials(basemesh):
+    """M_Skin for the body (underwear is painted into the skin texture), M_Eyes for the eyes.
+
+    The eyes get their own texture, so their UVs are scaled up to fill the whole 0..1 square.
+    """
     materials = []
     for name, colour in (("M_Skin", (0.80, 0.62, 0.52, 1.0)),
-                         ("M_Eyes", (0.95, 0.95, 0.95, 1.0)),
-                         ("M_Underwear", (0.18, 0.18, 0.20, 1.0))):
+                         ("M_Eyes", (0.95, 0.95, 0.95, 1.0))):
         mat = bpy.data.materials.new(name)
         mat.diffuse_color = colour
         mat.use_nodes = True
@@ -342,9 +351,15 @@ def assign_materials(basemesh, underwear_verts):
         if len(island) < 2000:
             for face in island:
                 face.material_index = 1
-    for f in bm.faces:
-        if f.material_index == 0 and all(v.index in underwear_verts for v in f.verts):
-            f.material_index = 2
+
+    uv_layer = bm.loops.layers.uv.active
+    eye_loops = [loop for f in bm.faces if f.material_index == 1 for loop in f.loops]
+    us = [loop[uv_layer].uv.x for loop in eye_loops]
+    vs = [loop[uv_layer].uv.y for loop in eye_loops]
+    size = max(max(us) - min(us), max(vs) - min(vs))
+    for loop in eye_loops:
+        uv = loop[uv_layer].uv
+        loop[uv_layer].uv = (0.02 + 0.96 * (uv.x - min(us)) / size, 0.02 + 0.96 * (uv.y - min(vs)) / size)
     bm.to_mesh(basemesh.data)
     bm.free()
 
@@ -404,7 +419,7 @@ def build_body(body_name, macros):
     strip_helpers_keep_eyes(basemesh, bone_names)
     pose_to_t_pose(basemesh, armature)
     underwear_verts = find_underwear_verts(basemesh, armature, bust_z)
-    assign_materials(basemesh, underwear_verts)
+    assign_materials(basemesh)
     paint_hide_mask(basemesh, underwear_verts)
     export(basemesh, armature, fbx_path, blend_path, mesh_name)
 
