@@ -351,11 +351,34 @@ def shadow_bands(colour, shadow):
     return np.clip(colour * mul, 0.0, 1.0)
 
 
-def load_ref(name):
+def strip_hair(img):
+    """Replace hair, beard and brows in a face drawing with nearby skin, so the base head is plain.
+
+    Hair/beard/brow pixels are the large very dark masses (ink lines are dark too, but thin: a
+    5 px opening removes them from the mask). Returns (skin-only image, hair+beard mask 0..1).
+    """
+    lum = img @ np.array([0.3, 0.59, 0.11], np.float32)
+    body = drawing_mask(img)
+    dark = (lum < 0.16) & body
+    mass = morph(morph(dark, 4, False), 7, True)            # open: drop thin ink, keep masses
+    mass = morph(morph(mass, 3, True), 3, False)            # close small holes
+    skin = body & ~mass
+    filled = pb.dilate(img, skin, 120)
+    blur = np.asarray(Image.fromarray((np.clip(filled, 0, 1) * 255).astype(np.uint8))
+                      .filter(ImageFilter.GaussianBlur(9))).astype(np.float32) / 255
+    out = np.where(mass[:, :, None], blur, img)
+    return out, mass.astype(np.float32)
+
+
+def load_ref(name, plain_head=False):
     path = os.path.join(REF_DIR, name + ".png")
     if not os.path.exists(path):
         return None
-    return grade_image(np.asarray(Image.open(path).convert("RGB")).astype(np.float32) / 255)
+    img = np.asarray(Image.open(path).convert("RGB")).astype(np.float32) / 255
+    if plain_head:
+        img, mass = strip_hair(img)
+        Image.fromarray((mass * 255).astype(np.uint8)).save(os.path.join(REF_DIR, name + "_HairMask.png"))
+    return grade_image(img)
 
 
 def main():
@@ -371,8 +394,9 @@ def main():
 
     front = load_ref(f"{body_name}_Front")
     back = load_ref(f"{body_name}_Back")
-    face_front = load_ref(f"{body_name}_FaceFront")
-    face_side = load_ref(f"{body_name}_FaceSide")
+    face_front = load_ref(f"{body_name}_FaceFront", plain_head=True)
+    face_side = load_ref(f"{body_name}_FaceSide", plain_head=True)
+    back_head = load_ref(f"{body_name}_Back", plain_head=True)
 
     skin_obj = pb.make_copy(mesh_obj, keep_eyes=False)
     pos = pb.bake(skin_obj, RES, pb.geom_socket("Position"))
@@ -405,8 +429,9 @@ def main():
         views = [project_head_view(P, N, face_front, lm, head_pts, body_name, "front")]
         if face_side is not None:
             views.append(project_head_view(P, N, face_side, lm, head_pts, body_name, "side"))
-        if back is not None:
-            views.append((colour_b, w_b * pb.smoothstep(0.2, 0.6, N[:, 1])))
+        if back_head is not None:
+            colour_bh, w_bh = project_view(mesh_obj, P, N, back_head, mirror_x=True)
+            views.append((colour_bh, w_bh * pb.smoothstep(0.2, 0.6, N[:, 1])))
         wsum = sum(w for _, w in views)
         head_col = sum(c * w[:, None] for c, w in views) / np.maximum(wsum, 1e-6)[:, None]
         head_cov = np.clip(wsum, 0, 1)
