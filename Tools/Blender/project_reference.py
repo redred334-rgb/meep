@@ -353,20 +353,26 @@ def shadow_bands(colour, shadow):
 
 # Regions (pixel polygons) of hair, beard and brows in each face drawing. Anything inside is
 # replaced with nearby skin so the base head stays plain; hair is a mesh, beard/brows are layers.
+# Regions inside the strip areas that must be kept (the lips sit inside the beard area).
+KEEP_REGIONS = {
+    "Male_FaceFront": [[(168, 456), (288, 456), (292, 502), (228, 510), (164, 502)]],
+    "Male_FaceSide": [[(6, 390), (50, 390), (50, 438), (6, 438)]],
+}
+
 STRIP_REGIONS = {
     "Male_FaceFront": [
         [(0, 0), (445, 0), (445, 330), (400, 262), (350, 215), (300, 200), (228, 192), (160, 200),
          (100, 215), (45, 262), (0, 330)],                                            # hair
         [(28, 400), (95, 452), (165, 442), (228, 438), (292, 442), (360, 452), (425, 400), (420, 470),
          (395, 575), (340, 690), (228, 712), (118, 690), (60, 575), (30, 470)],      # beard + moustache
-        [(90, 252), (215, 258), (215, 302), (90, 302)], [(245, 258), (370, 252), (370, 302), (245, 302)],  # brows
+        [(90, 250), (215, 256), (215, 290), (90, 290)], [(245, 256), (370, 250), (370, 290), (245, 290)],  # brows
     ],
     "Male_FaceSide": [
         [(0, 0), (466, 0), (466, 330), (445, 420), (400, 470), (300, 400), (250, 360), (245, 300),
          (235, 250), (200, 215), (150, 180), (100, 165), (55, 180), (0, 230)],       # hair
         [(10, 368), (60, 372), (120, 345), (200, 330), (255, 360), (290, 400), (305, 450), (260, 530),
          (180, 560), (120, 548), (60, 500), (25, 450), (10, 420)],                   # beard + moustache
-        [(45, 222), (135, 232), (135, 256), (45, 250)],                             # brow
+        [(45, 222), (135, 232), (135, 252), (45, 248)],                             # brow
     ],
     "Male_Back": [[(230, 0), (370, 0), (370, 115), (230, 115)]],                    # back of the hair
 }
@@ -388,7 +394,12 @@ def strip_hair(img, name=None):
         for poly in STRIP_REGIONS[name]:
             ImageDraw.Draw(region).polygon(poly, fill=255)
         mass |= (np.asarray(region) > 0) & body
-    mass = morph(mass, 6, True)                             # take a margin of the lighter strokes too
+    mass = morph(mass, 6, True)
+    if name in KEEP_REGIONS:
+        keep = Image.new("L", (img.shape[1], img.shape[0]), 0)
+        for poly in KEEP_REGIONS[name]:
+            ImageDraw.Draw(keep).polygon(poly, fill=255)
+        mass &= ~(np.asarray(keep) > 0)                             # take a margin of the lighter strokes too
     skin = body & ~mass
     # Seed the fill only from clean skin well away from the hair edge, then smooth it so the
     # filled area is a soft skin tone rather than streaks.

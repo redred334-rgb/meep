@@ -8,8 +8,10 @@ Output (relative to the repo root), for each of Male and Female:
 What you get per body:
     - One mesh, T-pose, feet at 0 (male ~1.79 m, female ~1.66 m)
     - Both bodies use the same skeleton, so animations and clothes setups are shared
-    - Unreal-style skeleton (root, pelvis, spine_01..03, thigh_l, ...)
+    - Unreal-style skeleton (root, pelvis, spine_01..03, thigh_l, ...) plus jaw, eye_l, eye_r
     - Eyes kept as part of the mesh so face morphs move them with the sockets
+    - Teeth and tongue inside the mouth (M_Mouth), lower teeth and tongue follow the jaw
+    - Expression morph targets (Exp_*) for talking and emotes, alongside the face sliders
     - Material slots: M_Skin, M_Eyes (underwear is painted into the skin texture by
       Tools/Blender/paint_base_body.py)
     - Face customisation morph targets (FaceSlider names below)
@@ -22,11 +24,13 @@ Run:
     blender -b -P Tools/Blender/build_base_body.py
 """
 
+import json
 import os
 import sys
 
 import bpy  # noqa: E402  (bpy must load before bmesh)
 import bmesh
+from mathutils import Vector
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 OUT_DIR = os.path.join(REPO_ROOT, "Art", "Characters", "Base")
@@ -113,7 +117,32 @@ MASK_BONES = {
 UNDERWEAR_BONES = ("pelvis", "spine_01", "thigh_l", "thigh_r")
 BRA_BONES = ("spine_02", "spine_03", "clavicle_l", "clavicle_r")
 
-EYE_GROUPS = ("helper-l-eye", "helper-r-eye")
+EYE_GROUPS = {"eye_l": "helper-l-eye", "eye_r": "helper-r-eye"}
+
+# Mouth interior kept for talking: group -> bone it follows.
+MOUTH_GROUPS = {"helper-upper-teeth": "head", "helper-lower-teeth": "jaw", "helper-tongue": "jaw"}
+
+# Expression morph targets for talking and emotes (MPFB "face units"). Name -> target file.
+EXPRESSIONS = {
+    "Exp_BlinkL": "eye-left-closure", "Exp_BlinkR": "eye-right-closure",
+    "Exp_EyeWideL": "eye-left-opened-up", "Exp_EyeWideR": "eye-right-opened-up",
+    "Exp_SquintL": "eye-left-slit", "Exp_SquintR": "eye-right-slit",
+    "Exp_BrowDownL": "eyebrows-left-down", "Exp_BrowDownR": "eyebrows-right-down",
+    "Exp_BrowUpL": "eyebrows-left-up", "Exp_BrowUpR": "eyebrows-right-up",
+    "Exp_BrowInnerUpL": "eyebrows-left-inner-up", "Exp_BrowInnerUpR": "eyebrows-right-inner-up",
+    "Exp_BrowOuterUpL": "eyebrows-left-extern-up", "Exp_BrowOuterUpR": "eyebrows-right-extern-up",
+    "Exp_MouthOpen": "mouth-open", "Exp_MouthSmile": "mouth-corner-puller",
+    "Exp_MouthFrown": "mouth-depression", "Exp_MouthFrownStretch": "mouth-depression-retraction",
+    "Exp_MouthPucker": "mouth-pursing", "Exp_MouthFunnel": "mouth-protusion",
+    "Exp_MouthPress": "mouth-compression", "Exp_MouthStretch": "mouth-retraction",
+    "Exp_MouthSmileWide": "mouth-upward-retraction", "Exp_MouthUpperUp": "mouth-elevation",
+    "Exp_MouthRollOut": "mouth-eversion", "Exp_LipsPart": "mouth-parling",
+    "Exp_LipsPartSide": "mouth-part-later", "Exp_NeckTense": "neck-platysma",
+    "Exp_NoseScrunch": "nose-compression", "Exp_NoseDown": "nose-depression",
+    "Exp_NoseFlareL": "nose-left-dilatation", "Exp_NoseFlareR": "nose-right-dilatation",
+    "Exp_NoseSneerL": "nose-left-elevation", "Exp_NoseSneerR": "nose-right-elevation",
+}
+EXPRESSION_SET = "caucasian"  # MPFB ships the units per ethnicity; the shapes are near-identical
 
 # MPFB vertex groups kept (renamed mask_*) so the texture painter can find these areas.
 # They don't match any bone, so the FBX exporter leaves them out.
@@ -157,6 +186,9 @@ def add_face_morphs(basemesh):
     targets_dir = LocationService.get_mpfb_data("targets")
 
     basemesh.shape_key_add(name="Basis", from_mix=False)
+    for name, unit in EXPRESSIONS.items():
+        path = os.path.join(targets_dir, "expression", "units", EXPRESSION_SET, unit + ".target.gz")
+        TargetService.load_target(basemesh, path, weight=0.0, name=name)
     for morph_name, parts in FACE_MORPHS.items():
         loaded = []
         for part in parts:
@@ -187,6 +219,49 @@ def add_rig(basemesh):
     if "Root" in basemesh.vertex_groups:
         basemesh.vertex_groups["Root"].name = "root"
     return armature
+
+
+def group_centre(basemesh, group_name):
+    idx = basemesh.vertex_groups[group_name].index
+    pts = [v.co for v in basemesh.data.vertices if any(g.group == idx and g.weight > 0 for g in v.groups)]
+    return sum(pts, Vector()) / len(pts)
+
+
+def add_face_bones(basemesh, armature):
+    """Jaw and eye bones for talking and eye movement, with MPFB's default-rig jaw weights."""
+    LocationService = mpfb_module("locationservice").LocationService
+    jaw_tail = basemesh.data.vertices[991].co.copy()  # chin point, as in MPFB's default rig
+    bones = {
+        "jaw": (group_centre(basemesh, "joint-mouth"), jaw_tail),
+        "eye_l": (group_centre(basemesh, "joint-l-eye"), group_centre(basemesh, "joint-l-eye-target")),
+        "eye_r": (group_centre(basemesh, "joint-r-eye"), group_centre(basemesh, "joint-r-eye-target")),
+    }
+    bpy.ops.object.select_all(action='DESELECT')
+    armature.select_set(True)
+    bpy.context.view_layer.objects.active = armature
+    bpy.ops.object.mode_set(mode='EDIT')
+    for name, (head, tail) in bones.items():
+        eb = armature.data.edit_bones.new(name)
+        eb.head, eb.tail = head, tail
+        eb.parent = armature.data.edit_bones["head"]
+        eb.use_deform = True
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    weights_path = os.path.join(LocationService.get_mpfb_data("rigs"), "standard", "weights.default.json")
+    with open(weights_path, "r", encoding="utf-8") as f:
+        jaw_weights = json.load(f)["weights"]["jaw"]
+    jaw = basemesh.vertex_groups.new(name="jaw")
+    head = basemesh.vertex_groups["head"]
+    head_idx = head.index
+    for index, weight in jaw_weights:
+        if index >= len(basemesh.data.vertices):
+            continue
+        v = basemesh.data.vertices[index]
+        head_w = next((g.weight for g in v.groups if g.group == head_idx), 0.0)
+        jaw.add([index], min(weight, max(head_w, weight)), 'REPLACE')
+        head.add([index], max(0.0, head_w - weight), 'REPLACE')
+    basemesh.vertex_groups.new(name="eye_l")
+    basemesh.vertex_groups.new(name="eye_r")
 
 
 def pose_to_t_pose(basemesh, armature):
@@ -241,29 +316,39 @@ def strip_helpers_keep_eyes(basemesh, bone_names):
     """Delete helper/joint geometry except the eyes, and drop non-bone vertex groups."""
     groups = basemesh.vertex_groups
     body_idx = groups["body"].index
-    eye_idx = {groups[g].index for g in EYE_GROUPS}
+    eye_idx = {groups[g].index: bone for bone, g in EYE_GROUPS.items()}
+    mouth_idx = {groups[g].index: bone for g, bone in MOUTH_GROUPS.items()}
 
     keep = set()
     eye_verts = set()
+    mouth_verts = set()
+    part_bone = {}  # vertex -> the single bone it follows (eyeballs, teeth, tongue)
     for v in basemesh.data.vertices:
         gids = {g.group for g in v.groups if g.weight > 0.0}
         if body_idx in gids:
             keep.add(v.index)
-        elif gids & eye_idx:
-            keep.add(v.index)
-            eye_verts.add(v.index)
+            continue
+        for idx in gids:
+            if idx in eye_idx:
+                keep.add(v.index)
+                eye_verts.add(v.index)
+                part_bone[v.index] = eye_idx[idx]
+            elif idx in mouth_idx:
+                keep.add(v.index)
+                mouth_verts.add(v.index)
+                part_bone[v.index] = mouth_idx[idx]
 
     for mod in list(basemesh.modifiers):
         if mod.type == 'MASK':
             basemesh.modifiers.remove(mod)
 
-    # Eyes follow the head bone only.
-    head = groups.get("head")
+    # Eyeballs, teeth and tongue each follow exactly one bone.
+    parts = list(part_bone)
     for gname in [g.name for g in groups]:
-        if gname not in bone_names:
-            continue
-        groups[gname].remove(list(eye_verts))
-    head.add(list(eye_verts), 1.0, 'REPLACE')
+        if gname in bone_names:
+            groups[gname].remove(parts)
+    for bone in set(part_bone.values()):
+        groups[bone].add([v for v, b in part_bone.items() if b == bone], 1.0, 'REPLACE')
 
     # bmesh keeps shape keys when deleting vertices.
     bm = bmesh.new()
@@ -280,7 +365,7 @@ def strip_helpers_keep_eyes(basemesh, bone_names):
         elif g.name not in bone_names:
             basemesh.vertex_groups.remove(g)
 
-    return eye_verts
+    return eye_verts, mouth_verts
 
 
 def dominant_bone(vertex, name_by_index):
@@ -313,14 +398,16 @@ def find_underwear_verts(basemesh, armature, bust_z=None):
     return result
 
 
-def assign_materials(basemesh):
-    """M_Skin for the body (underwear is painted into the skin texture), M_Eyes for the eyes.
+def assign_materials(basemesh, mouth_verts):
+    """M_Skin for the body (underwear is painted into the skin texture), M_Eyes for the eyes,
+    M_Mouth for the teeth and tongue.
 
     The eyes get their own texture, so their UVs are scaled up to fill the whole 0..1 square.
     """
     materials = []
     for name, colour in (("M_Skin", (0.80, 0.62, 0.52, 1.0)),
-                         ("M_Eyes", (0.95, 0.95, 0.95, 1.0))):
+                         ("M_Eyes", (0.95, 0.95, 0.95, 1.0)),
+                         ("M_Mouth", (0.45, 0.18, 0.16, 1.0))):
         mat = bpy.data.materials.new(name)
         mat.diffuse_color = colour
         mat.use_nodes = True
@@ -333,6 +420,9 @@ def assign_materials(basemesh):
     bm = bmesh.new()
     bm.from_mesh(basemesh.data)
     bm.faces.ensure_lookup_table()
+    for f in bm.faces:
+        if all(v.index in mouth_verts for v in f.verts):
+            f.material_index = 2
     # The body is one big connected island; each eye is a small separate one.
     seen = set()
     for f in bm.faces:
@@ -348,7 +438,7 @@ def assign_materials(basemesh):
                     if nf.index not in seen:
                         seen.add(nf.index)
                         stack.append(nf)
-        if len(island) < 2000:
+        if len(island) < 2000 and island[0].material_index == 0:
             for face in island:
                 face.material_index = 1
 
@@ -414,12 +504,13 @@ def build_body(body_name, macros):
     basemesh = build_human(macros)
     add_face_morphs(basemesh)
     armature = add_rig(basemesh)
+    add_face_bones(basemesh, armature)
     bone_names = {b.name for b in armature.data.bones}
     bust_z = bust_height(basemesh) if macros["gender"] < 0.5 else None
-    strip_helpers_keep_eyes(basemesh, bone_names)
+    _, mouth_verts = strip_helpers_keep_eyes(basemesh, bone_names)
     pose_to_t_pose(basemesh, armature)
     underwear_verts = find_underwear_verts(basemesh, armature, bust_z)
-    assign_materials(basemesh)
+    assign_materials(basemesh, mouth_verts)
     paint_hide_mask(basemesh, underwear_verts)
     export(basemesh, armature, fbx_path, blend_path, mesh_name)
 
