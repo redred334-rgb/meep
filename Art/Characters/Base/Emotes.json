@@ -115,21 +115,19 @@
     },
     {
       "name": "Angry",
-      "description": "Lowered brows, flared nostrils, mouth pressed into a hard frown. Jaw clenched, no shouting yet.",
+      "description": "Brows crushed down over narrowed eyes, nose scrunched and flared, mouth pressed into a frown, jaw clenched. No shouting yet.",
       "morphs": {
         "Exp_BrowDownL": 1.0,
         "Exp_BrowDownR": 1.0,
-        "Exp_SquintL": 0.55,
-        "Exp_SquintR": 0.55,
-        "Exp_NoseFlareL": 0.6,
-        "Exp_NoseFlareR": 0.6,
-        "Exp_NoseSneerL": 0.2,
-        "Exp_NoseSneerR": 0.2,
+        "Exp_SquintL": 0.75,
+        "Exp_SquintR": 0.75,
         "Exp_NoseScrunch": 0.35,
-        "Exp_MouthFrown": 0.7,
-        "Exp_MouthPress": 0.45
+        "Exp_NoseFlareL": 0.5,
+        "Exp_NoseFlareR": 0.5,
+        "Exp_MouthFrown": 0.5,
+        "Exp_MouthPress": 0.4
       },
-      "jaw_deg": -2,
+      "jaw_deg": -3,
       "eyes": {"converge": 0.6}
     },
     {
@@ -290,17 +288,16 @@
     },
     {
       "name": "Determined",
-      "description": "Brows down, eyes narrowed, lips pressed into a hard line. Ready to fight.",
+      "description": "Brows down hard, eyes narrowed, lips pressed shut, slight nostril flare. Ready to fight.",
       "morphs": {
-        "Exp_BrowDownL": 0.85,
-        "Exp_BrowDownR": 0.85,
-        "Exp_SquintL": 0.55,
-        "Exp_SquintR": 0.55,
-        "Exp_MouthPress": 0.8,
-        "Exp_MouthFrown": 0.15,
-        "Exp_NoseFlareL": 0.4,
-        "Exp_NoseFlareR": 0.4,
-        "Exp_NeckTense": 0.25
+        "Exp_BrowDownL": 0.9,
+        "Exp_BrowDownR": 0.9,
+        "Exp_SquintL": 0.6,
+        "Exp_SquintR": 0.6,
+        "Exp_MouthPress": 0.6,
+        "Exp_NoseFlareL": 0.3,
+        "Exp_NoseFlareR": 0.3,
+        "Exp_MouthFrown": 0.4
       },
       "jaw_deg": 0,
       "eyes": {"converge": 0.6}
