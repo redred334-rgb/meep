@@ -348,7 +348,7 @@ def paint(body_name):
     hook_up_materials(body_name, blend_path)
 
 
-def hook_up_materials(body_name, blend_path):
+def hook_up_materials(body_name, blend_path, colour_file=None, with_beard=False):
     """Put the Borderlands textures on the .blend materials so the file previews correctly."""
     bpy.ops.wm.open_mainfile(filepath=blend_path)
 
@@ -376,8 +376,8 @@ def hook_up_materials(body_name, blend_path):
         links.new(out, bsdf.inputs["Base Color"])
         bsdf.inputs["Roughness"].default_value = 0.75
 
-    textured("M_Skin", f"T_Body_{body_name}_BaseColor_BL.png",
-             f"T_Body_{body_name}_Beard.png" if body_name == "Male" else None)
+    textured("M_Skin", colour_file or f"T_Body_{body_name}_BaseColor_BL.png",
+             f"T_Body_{body_name}_Beard.png" if (body_name == "Male" and with_beard) else None)
     textured("M_Eyes", "T_Eyes_BaseColor.png")
     bpy.ops.wm.save_as_mainfile(filepath=blend_path)
 

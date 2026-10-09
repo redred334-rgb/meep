@@ -46,6 +46,10 @@ HALF_MUL = 1.0 + (CORE_MUL - 1.0) * 0.6      # ~x0.72
 CREASE_MUL = np.array([0.62, 0.40, 0.32], np.float32)   # x0.42 in creases
 HIGHLIGHT_MUL = np.array([1.11, 1.13, 1.06], np.float32)   # +12% L, hue +3 toward yellow
 
+# Hair, brows and beard are separate layers/meshes in the game (swappable in the character
+# creator), so the head is painted plain. The beard mask is still written as an optional layer.
+PLAIN_HEAD = True
+
 STYLES = {
     # ink: line strength; thin_alpha: thin-line opacity; hatch: hatching amount; hard: band edge
     # hardness; warmth: warmth-zone blend; sat: saturation multiplier on the lit skin
@@ -507,12 +511,16 @@ def paint_body(body_name, maps, lm, style):
 
     skin_colour = colour.copy()
 
-    # --- Hair: brows and scalp clumps.
-    brow_fill, brow_ink = paint_brows(P, N, lm, male)
-    scalp_d, scalp_ink, scalp_val = paint_scalp(P, N, scalp_f)
-    hair = np.clip(np.maximum(brow_fill * 0.85, scalp_d), 0.0, 1.0)
-    hair_col = HAIR[None, :] * np.where(scalp_d[:, None] > brow_fill[:, None], scalp_val[:, None], 1.0)
-    colour = blend(colour, hair_col, hair)
+    # --- Hair: brows and scalp clumps (only when the head is not kept plain).
+    if PLAIN_HEAD:
+        hair = np.zeros(len(P), np.float32)
+        brow_ink = scalp_ink = hair
+    else:
+        brow_fill, brow_ink = paint_brows(P, N, lm, male)
+        scalp_d, scalp_ink, scalp_val = paint_scalp(P, N, scalp_f)
+        hair = np.clip(np.maximum(brow_fill * 0.85, scalp_d), 0.0, 1.0)
+        hair_col = HAIR[None, :] * np.where(scalp_d[:, None] > brow_fill[:, None], scalp_val[:, None], 1.0)
+        colour = blend(colour, hair_col, hair)
 
     # --- Underwear: painted cloth, darker in shadow, waistband, stitch dashes.
     under_m, edge_dist, waistband = underwear_mask(P, lm, female=not male)
@@ -540,7 +548,7 @@ def paint_body(body_name, maps, lm, style):
     ao_ink *= smoothstep(1.3 * lm.eye_radius, 2.0 * lm.eye_radius, eye_d)  # socket: only lid lines
     ao_ink *= 1.0 - hair  # hair has its own ink
     ink = ao_ink
-    ink = np.maximum(ink, face_ink(P, N, lm, st))
+    ink = np.maximum(ink, face_ink(P, N, lm, st) * (0.75 if PLAIN_HEAD else 1.0))
     ink = np.maximum(ink, brow_ink)
     ink = np.maximum(ink, scalp_ink * 0.9)
     ink = np.maximum(ink, smoothstep(0.15, 0.0, np.abs(nails_f - 0.5)) * 0.5)
@@ -550,6 +558,8 @@ def paint_body(body_name, maps, lm, style):
         nip_edge = smoothstep(0.12, 0.0, np.abs(nipple_f - 0.3)) * smoothstep(0.1, 0.4, shadow + 0.3 * (1 - ao_m))
         ink = np.maximum(ink, nip_edge * 0.7)
     hatch = hatching(P, axis, shadow, ao_s, ao_m, head_f, st) * (1.0 - hair) * (1.0 - under_m)
+    if PLAIN_HEAD:
+        hatch *= 1.0 - smoothstep(0.3, 0.6, head_f)
     hatch_area = float((hatch > 0.3).mean())
     if hatch_area > 0.05:
         hatch *= 0.05 / hatch_area

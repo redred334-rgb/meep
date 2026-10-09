@@ -8,8 +8,10 @@ to fit, and every texel that faces the camera is coloured from it. A back-view d
 the same way for the back; without one, the back is filled with a softened copy of the front
 (ink lines dissolved) so the colour is continuous.
 
-The head is NOT taken from the full-body drawing (the face is far too small in it); it keeps the
-colour already in the base texture, so the face can be painted by a separate close-up pass.
+The head is NOT taken from the full-body drawing (the face is far too small in it). It comes from
+close-up face drawings (<Body>_FaceFront.png, <Body>_FaceSide.png) matched by facial landmarks
+(FACE_LANDMARKS: pixel positions measured on the drawings), and the back of the head from the
+back-view drawing. Every drawing is colour-graded to the skin palette first.
 
 Run after paint_base_body.py:
     blender -b -P Tools/Blender/project_reference.py -- Male
@@ -251,21 +253,109 @@ def soft_copy(img, mask):
     return np.asarray(pil.filter(ImageFilter.GaussianBlur(14))).astype(np.float32) / 255
 
 
-def grade_to_palette(drawn, shadow):
-    """Match the drawing's skin to the palette (AI drawings run ~2x too saturated), then add the
-    painted half-tone / core shadow bands the drawing lacks."""
-    lum = luminance(drawn)
-    sat = drawn.max(axis=1) - drawn.min(axis=1)
-    skin_px = (lum > 0.35) & (sat > 0.15) & (drawn[:, 0] > drawn[:, 2])
-    median = np.median(drawn[skin_px], axis=0) if skin_px.sum() > 100 else SKIN
-    graded = drawn * (SKIN / np.maximum(median, 1e-3))
-    # Pull saturation down toward the palette (keeps ink dark, since ink has little saturation).
+# ---------------------------------------------------------------------------------------------
+# Head: landmark-matched projection of the face drawings
+
+# Pixel positions of facial landmarks in the reference drawings (measured on the saved crops).
+FACE_LANDMARKS = {
+    "Male": {
+        # front view: name -> (px, py); model side: (x, z) taken from Landmarks
+        "front": {"eye_l": (305, 318), "eye_r": (150, 318), "nose_tip": (228, 397), "mouth": (228, 478),
+                  "corner_l": (282, 481), "corner_r": (175, 481), "chin_bottom": (228, 695),
+                  "ear_l": (430, 355), "ear_r": (28, 355), "hairline": (228, 195), "head_top": (228, 60),
+                  "temple_l": (375, 235), "temple_r": (80, 235), "neck_l": (330, 640), "neck_r": (125, 640)},
+        # side view (profile facing left = the character's left side): name -> (px, py); model (y, z)
+        "side": {"nose_tip": (12, 345), "chin": (55, 475), "chin_bottom": (118, 540), "eye": (105, 283),
+                 "brow": (75, 238), "ear": (288, 318), "ear_top": (292, 258), "ear_bottom": (300, 372),
+                 "head_back": (440, 230), "head_top": (240, 62), "mouth": (32, 415), "hairline": (62, 178),
+                 "neck_front": (165, 600), "neck_back": (400, 600)},
+    },
+}
+
+
+def model_face_points(lm, head_pts, view):
+    """Model-space (x,z) or (y,z) positions matching FACE_LANDMARKS."""
+    top = head_pts[np.argmax(head_pts[:, 2])]
+    back = head_pts[np.argmax(head_pts[:, 1])]
+    r = lm.eye_radius
+    chin_bottom_z = lm.chin[2] - 0.022
+    if view == "front":
+        return {"eye_l": (lm.eye_l[0], lm.eye_l[2]), "eye_r": (lm.eye_r[0], lm.eye_r[2]),
+                "nose_tip": (0.0, lm.nose_tip[2]), "mouth": (0.0, 0.5 * (lm.lips_top + lm.lips_bottom)),
+                "corner_l": (lm.mouth_half_width, 0.5 * (lm.lips_top + lm.lips_bottom)),
+                "corner_r": (-lm.mouth_half_width, 0.5 * (lm.lips_top + lm.lips_bottom)),
+                "chin_bottom": (0.0, chin_bottom_z), "ear_l": (lm.ear_x + 0.011, lm.ear_z),
+                "ear_r": (-lm.ear_x - 0.011, lm.ear_z), "hairline": (0.0, lm.eye_l[2] + 0.034),
+                "head_top": (0.0, top[2]), "temple_l": (0.062, lm.eye_l[2] + 0.03), "temple_r": (-0.062, lm.eye_l[2] + 0.03),
+                "neck_l": (0.045, lm.chin[2] - 0.05), "neck_r": (-0.045, lm.chin[2] - 0.05)}
+    return {"nose_tip": (lm.nose_tip[1], lm.nose_tip[2]), "chin": (lm.chin[1], lm.chin[2]),
+            "chin_bottom": (lm.chin[1] + 0.03, chin_bottom_z), "eye": (lm.eye_l[1] + 0.006, lm.eye_l[2]),
+            "brow": (lm.eye_l[1] - 0.004, lm.eye_l[2] + 1.6 * r), "ear": (lm.ear_y, lm.ear_z),
+            "ear_top": (lm.ear_y - 0.003, lm.ear_z + 0.028), "ear_bottom": (lm.ear_y + 0.004, lm.ear_z - 0.03),
+            "head_back": (back[1], back[2]), "head_top": (top[1], top[2]),
+            "mouth": (lm.mouth[1] + 0.004, 0.5 * (lm.lips_top + lm.lips_bottom)),
+            "hairline": (lm.nose_tip[1] + 0.02, lm.eye_l[2] + 0.034),
+            "neck_front": (lm.chin[1] + 0.045, lm.chin[2] - 0.055), "neck_back": (lm.chin[1] + 0.18, lm.chin[2] - 0.055)}
+
+
+def project_head_view(P, N, img, lm, head_pts, body_name, view):
+    """Project a face drawing onto the head using landmark correspondences. Returns (colour, weight)."""
+    px = FACE_LANDMARKS[body_name][view]
+    mp = model_face_points(lm, head_pts, view)
+    names = [n for n in px if n in mp]
+    src = np.array([mp[n] for n in names], np.float64)
+    dst = np.array([px[n] for n in names], np.float64)
+    scale = 2500.0  # model metres -> roughly image pixels, keeps the TPS well conditioned
+    coef = tps_fit(src * scale, dst, reg=5.0)
+    ref_src = pb.dilate(img, drawing_mask(img), 80)
+
+    if view == "front":
+        q = np.stack([P[:, 0], P[:, 2]], 1)
+        depth = -P[:, 1]
+        facing = pb.smoothstep(0.15, 0.55, -N[:, 1])
+    else:
+        q = np.stack([P[:, 1], P[:, 2]], 1)
+        depth = np.abs(P[:, 0])
+        facing = pb.smoothstep(0.3, 0.75, np.abs(N[:, 0]))
+    uv = tps_eval(coef, src * scale, q * scale)
+    colour = sample(ref_src, uv[:, 0], uv[:, 1])
+
+    # Visibility along the view direction, on a 1 mm grid of the projection plane.
+    cell_q = np.floor((q - q.min(axis=0)) / 0.0015).astype(np.int64)
+    W = int(cell_q[:, 0].max()) + 1
+    cell = cell_q[:, 1] * W + cell_q[:, 0]
+    nearest = np.full(cell.max() + 1, -np.inf, np.float32)
+    np.maximum.at(nearest, cell, depth)
+    visible = depth >= nearest[cell] - 0.01
+    inside = (uv[:, 0] > 0) & (uv[:, 0] < img.shape[1] - 1) & (uv[:, 1] > 0) & (uv[:, 1] < img.shape[0] - 1)
+    return colour, facing * visible * inside
+
+
+def grade_image(img):
+    """Scale a drawing so its skin median matches the palette and pull saturation down."""
+    flat = img.reshape(-1, 3)
+    lum = luminance(flat)
+    sat = flat.max(axis=1) - flat.min(axis=1)
+    skin_px = (lum > 0.3) & (sat > 0.12) & (flat[:, 0] > flat[:, 2])
+    median = np.median(flat[skin_px], axis=0) if skin_px.sum() > 100 else SKIN
+    graded = flat * (SKIN / np.maximum(median, 1e-3))
     g_lum = luminance(graded)[:, None]
     graded = g_lum + (graded - g_lum) * 0.8
+    return np.clip(graded, 0, 1).reshape(img.shape)
+
+
+def shadow_bands(colour, shadow):
     half = pb.smoothstep(0.14, 0.22, shadow)[:, None]
     core = pb.smoothstep(0.32, 0.40, shadow)[:, None]
     mul = (1.0 + (HALF_MUL - 1.0) * half) * (1.0 + (CORE_MUL / HALF_MUL - 1.0) * core)
-    return np.clip(graded * mul, 0.0, 1.0)
+    return np.clip(colour * mul, 0.0, 1.0)
+
+
+def load_ref(name):
+    path = os.path.join(REF_DIR, name + ".png")
+    if not os.path.exists(path):
+        return None
+    return grade_image(np.asarray(Image.open(path).convert("RGB")).astype(np.float32) / 255)
 
 
 def main():
@@ -273,11 +363,16 @@ def main():
     blend_path = os.path.join(BASE_DIR, f"BaseBody_{body_name}.blend")
     bpy.ops.wm.open_mainfile(filepath=blend_path)
     mesh_obj = bpy.data.objects[f"SK_BaseBody_{body_name}"]
+    armature = bpy.data.objects["Armature"]
+    lm = pb.Landmarks(mesh_obj, armature)
+    head_idx = mesh_obj.vertex_groups["head"].index
+    head_pts = np.array([v.co[:] for v in mesh_obj.data.vertices
+                         if any(g.group == head_idx and g.weight > 0.5 for g in v.groups)], np.float32)
 
-    front = np.asarray(Image.open(os.path.join(REF_DIR, f"{body_name}_Front.png")).convert("RGB")).astype(np.float32) / 255
-    back_path = os.path.join(REF_DIR, f"{body_name}_Back.png")
-    back = (np.asarray(Image.open(back_path).convert("RGB")).astype(np.float32) / 255
-            if os.path.exists(back_path) else None)
+    front = load_ref(f"{body_name}_Front")
+    back = load_ref(f"{body_name}_Back")
+    face_front = load_ref(f"{body_name}_FaceFront")
+    face_side = load_ref(f"{body_name}_FaceSide")
 
     skin_obj = pb.make_copy(mesh_obj, keep_eyes=False)
     pos = pb.bake(skin_obj, RES, pb.geom_socket("Position"))
@@ -287,36 +382,43 @@ def main():
     valid = pos[:, :, 3].reshape(-1) > 0.5
     P = pos.reshape(-1, 4)[valid][:, :3].copy()
     N = nrm.reshape(-1, 4)[valid][:, :3].copy()
-    head_w = head.reshape(-1, 4)[valid][:, 0]
+    head_w = pb.smoothstep(0.35, 0.65, head.reshape(-1, 4)[valid][:, 0])
     shadow = 1.0 - ao_l.reshape(-1, 4)[valid][:, 0]
     del pos, nrm, head, ao_l
 
+    # --- Body: front and back T-pose drawings matched by silhouette.
     colour_f, w_f = project_view(mesh_obj, P, N, front, mirror_x=False)
     if back is not None:
         colour_b, w_b = project_view(mesh_obj, P, N, back, mirror_x=True)
     else:
-        soft = soft_copy(front, drawing_mask(front))
-        colour_b, w_b = project_view(mesh_obj, P, N, soft, mirror_x=True)
-        w_b *= 0.999  # keep slightly under the front so the front wins where both see a texel
-
-    # Anything neither view sees gets the softened front colour at the same height/side.
-    soft = soft_copy(front, drawing_mask(front))
-    colour_fill, _ = project_view(mesh_obj, P, N, soft, mirror_x=False)
-
+        colour_b, w_b = project_view(mesh_obj, P, N, soft_copy(front, drawing_mask(front)), mirror_x=True)
+        w_b *= 0.999
+    colour_fill, _ = project_view(mesh_obj, P, N, soft_copy(front, drawing_mask(front)), mirror_x=False)
     total = np.clip(w_f + w_b, 0, 1)
-    drawn = (colour_f * w_f[:, None] + colour_b * w_b[:, None]) / np.maximum(w_f + w_b, 1e-6)[:, None]
-    drawn = drawn * total[:, None] + colour_fill * (1 - total)[:, None]
-    drawn = grade_to_palette(drawn, shadow)
+    body = (colour_f * w_f[:, None] + colour_b * w_b[:, None]) / np.maximum(w_f + w_b, 1e-6)[:, None]
+    body = body * total[:, None] + colour_fill * (1 - total)[:, None]
 
-    base_path = os.path.join(TEX_DIR, f"T_Body_{body_name}_BaseColor_BL.png")
-    base = np.asarray(Image.open(base_path).convert("RGB").resize((RES, RES))).astype(np.float32) / 255
-    base = base[::-1].reshape(-1, 3)[valid]
-    keep_head = pb.smoothstep(0.35, 0.65, head_w)
-    out = drawn * (1 - keep_head)[:, None] + base * keep_head[:, None]
+    # --- Head: face drawings matched by landmarks (front + profile), back of the head from the back view.
+    drawn = body
+    coverage = total
+    if face_front is not None and body_name in FACE_LANDMARKS:
+        views = [project_head_view(P, N, face_front, lm, head_pts, body_name, "front")]
+        if face_side is not None:
+            views.append(project_head_view(P, N, face_side, lm, head_pts, body_name, "side"))
+        if back is not None:
+            views.append((colour_b, w_b * pb.smoothstep(0.2, 0.6, N[:, 1])))
+        wsum = sum(w for _, w in views)
+        head_col = sum(c * w[:, None] for c, w in views) / np.maximum(wsum, 1e-6)[:, None]
+        head_cov = np.clip(wsum, 0, 1)
+        head_col = head_col * head_cov[:, None] + body * (1 - head_cov)[:, None]
+        drawn = head_col * head_w[:, None] + body * (1 - head_w)[:, None]
+        coverage = np.maximum(total, head_cov * head_w)
 
+    out = shadow_bands(drawn, shadow)
     pb.save_png(pb.to_image(out, valid, RES, 3), os.path.join(TEX_DIR, f"T_Body_{body_name}_BaseColor_Drawn.png"))
-    pb.save_png(pb.to_image(total * (1 - keep_head), valid, RES, 1),
+    pb.save_png(pb.to_image(coverage, valid, RES, 1),
                 os.path.join(TEX_DIR, f"T_Body_{body_name}_DrawnCoverage.png"), size=1024)
+    pb.hook_up_materials(body_name, blend_path, colour_file=f"T_Body_{body_name}_BaseColor_Drawn.png")
 
 
 if __name__ == "__main__":
