@@ -1,0 +1,446 @@
+{
+  "_about": [
+    "Facial emote library for the base bodies (see README.md for the Exp_* morphs and bones).",
+    "morphs: Exp_* shape key -> weight 0..1. Every emote is a combination; no single shape at full strength.",
+    "jaw_deg: rotation of the jaw bone about its local X axis in degrees (positive opens, ~20 = fully open).",
+    "eyes: optional. Either {yaw, pitch} in degrees applied to both eye_l and eye_r (yaw > 0 looks to the",
+    "character's left, pitch > 0 looks up; local Z then local X of the eye bones) or {converge: metres}",
+    "which aims each eye at a point that far in front of the face so the eyes focus together.",
+    "borderlands_default_face is NOT an emote: it is the slider preset for the game's base look and is",
+    "applied underneath every emote. Preview sheets: Tools/Blender/render_emotes.py."
+  ],
+  "borderlands_default_face": {
+    "description": "Character-creator slider defaults for the Borderlands-style base look. Applied once on top of the neutral mesh; emotes layer over it.",
+    "sliders": {
+      "Eyes_Apart": 0.3,
+      "Jaw_AngleStrong": 0.4,
+      "Cheekbones_High": 0.3,
+      "Head_Square": 0.2,
+      "Chin_Forward": 0.2
+    }
+  },
+  "emotes": [
+    {
+      "name": "Neutral",
+      "description": "Rest face, eyes focused on something 0.6 m ahead (the player). Base for idle and the return pose after every emote.",
+      "morphs": {},
+      "jaw_deg": 0,
+      "eyes": {"converge": 0.6}
+    },
+    {
+      "name": "Happy",
+      "description": "Open grin with raised cheeks; eyes narrowed by the smile, brows lifted a touch.",
+      "morphs": {
+        "Exp_MouthSmileWide": 0.75,
+        "Exp_MouthSmile": 0.3,
+        "Exp_LipsPart": 0.35,
+        "Exp_SquintL": 0.4,
+        "Exp_SquintR": 0.4,
+        "Exp_BrowUpL": 0.2,
+        "Exp_BrowUpR": 0.2
+      },
+      "jaw_deg": 0,
+      "eyes": {"converge": 0.6}
+    },
+    {
+      "name": "Laugh",
+      "description": "Head-back belly laugh: jaw dropped, wide grin, eyes squeezed almost shut.",
+      "morphs": {
+        "Exp_MouthSmileWide": 0.9,
+        "Exp_MouthSmile": 0.3,
+        "Exp_MouthStretch": 0.25,
+        "Exp_SquintL": 0.8,
+        "Exp_SquintR": 0.8,
+        "Exp_BlinkL": 0.25,
+        "Exp_BlinkR": 0.25,
+        "Exp_BrowUpL": 0.25,
+        "Exp_BrowUpR": 0.25,
+        "Exp_NoseScrunch": 0.2
+      },
+      "jaw_deg": 11,
+      "eyes": {"yaw": 0, "pitch": 6}
+    },
+    {
+      "name": "Smirk",
+      "description": "One-sided knowing smile: lips parted to one side, one brow cocked, opposite eye narrowed.",
+      "morphs": {
+        "Exp_MouthSmile": 0.5,
+        "Exp_LipsPartSide": 0.45,
+        "Exp_SquintL": 0.55,
+        "Exp_BrowOuterUpR": 0.9,
+        "Exp_BrowUpR": 0.35,
+        "Exp_BrowDownL": 0.5,
+        "Exp_NoseSneerL": 0.15
+      },
+      "jaw_deg": 0,
+      "eyes": {"yaw": 6, "pitch": 0}
+    },
+    {
+      "name": "Sad",
+      "description": "Inner brows pulled up, corners of the mouth down, heavy lids, gaze dropped.",
+      "morphs": {
+        "Exp_BrowInnerUpL": 1.0,
+        "Exp_BrowInnerUpR": 1.0,
+        "Exp_BrowDownL": 0.25,
+        "Exp_BrowDownR": 0.25,
+        "Exp_MouthFrown": 0.8,
+        "Exp_LipsPart": 0.15,
+        "Exp_BlinkL": 0.3,
+        "Exp_BlinkR": 0.3,
+        "Exp_SquintL": 0.15,
+        "Exp_SquintR": 0.15
+      },
+      "jaw_deg": 0,
+      "eyes": {"yaw": 0, "pitch": -10}
+    },
+    {
+      "name": "Cry",
+      "description": "Sobbing: brows knotted up, eyes screwed shut, mouth stretched down with the jaw slack.",
+      "morphs": {
+        "Exp_BrowInnerUpL": 0.95,
+        "Exp_BrowInnerUpR": 0.95,
+        "Exp_BrowDownL": 0.2,
+        "Exp_BrowDownR": 0.2,
+        "Exp_SquintL": 0.7,
+        "Exp_SquintR": 0.7,
+        "Exp_BlinkL": 0.45,
+        "Exp_BlinkR": 0.45,
+        "Exp_MouthFrownStretch": 0.75,
+        "Exp_MouthFrown": 0.3,
+        "Exp_LipsPart": 0.4,
+        "Exp_NoseScrunch": 0.35
+      },
+      "jaw_deg": 5,
+      "eyes": {"yaw": 0, "pitch": -6}
+    },
+    {
+      "name": "Angry",
+      "description": "Lowered brows, flared nostrils, mouth pressed into a hard frown. Jaw clenched, no shouting yet.",
+      "morphs": {
+        "Exp_BrowDownL": 1.0,
+        "Exp_BrowDownR": 1.0,
+        "Exp_SquintL": 0.55,
+        "Exp_SquintR": 0.55,
+        "Exp_NoseFlareL": 0.6,
+        "Exp_NoseFlareR": 0.6,
+        "Exp_NoseSneerL": 0.2,
+        "Exp_NoseSneerR": 0.2,
+        "Exp_NoseScrunch": 0.35,
+        "Exp_MouthFrown": 0.7,
+        "Exp_MouthPress": 0.45
+      },
+      "jaw_deg": -2,
+      "eyes": {"converge": 0.6}
+    },
+    {
+      "name": "Rage",
+      "description": "Shout: jaw wide, upper lip snarled off the teeth, brows crushed down over wide eyes, neck tendons out.",
+      "morphs": {
+        "Exp_BrowDownL": 0.95,
+        "Exp_BrowDownR": 0.95,
+        "Exp_EyeWideL": 0.6,
+        "Exp_EyeWideR": 0.6,
+        "Exp_NoseFlareL": 0.8,
+        "Exp_NoseFlareR": 0.8,
+        "Exp_NoseScrunch": 0.55,
+        "Exp_NoseSneerL": 0.3,
+        "Exp_NoseSneerR": 0.3,
+        "Exp_MouthUpperUp": 0.6,
+        "Exp_MouthStretch": 0.5,
+        "Exp_MouthFrownStretch": 0.2,
+        "Exp_NeckTense": 0.9
+      },
+      "jaw_deg": 18,
+      "eyes": {"converge": 0.6}
+    },
+    {
+      "name": "Fear",
+      "description": "Eyes wide and brows pulled up in the middle, mouth stretched open in a gasp, neck tight.",
+      "morphs": {
+        "Exp_EyeWideL": 0.85,
+        "Exp_EyeWideR": 0.85,
+        "Exp_BrowInnerUpL": 0.8,
+        "Exp_BrowInnerUpR": 0.8,
+        "Exp_BrowUpL": 0.4,
+        "Exp_BrowUpR": 0.4,
+        "Exp_MouthStretch": 0.55,
+        "Exp_MouthFrown": 0.3,
+        "Exp_LipsPart": 0.4,
+        "Exp_NeckTense": 0.35
+      },
+      "jaw_deg": 5,
+      "eyes": {"converge": 0.6}
+    },
+    {
+      "name": "Surprise",
+      "description": "Brows and eyes thrown wide open, mouth dropped into an 'oh'.",
+      "morphs": {
+        "Exp_EyeWideL": 0.8,
+        "Exp_EyeWideR": 0.8,
+        "Exp_BrowUpL": 0.85,
+        "Exp_BrowUpR": 0.85,
+        "Exp_BrowInnerUpL": 0.3,
+        "Exp_BrowInnerUpR": 0.3,
+        "Exp_MouthFunnel": 0.45,
+        "Exp_LipsPart": 0.3
+      },
+      "jaw_deg": 9,
+      "eyes": {"converge": 0.6}
+    },
+    {
+      "name": "Disgust",
+      "description": "Nose scrunched and sneering, upper lip raised, brows down and eyes narrowed. 'That smells.'",
+      "morphs": {
+        "Exp_NoseScrunch": 0.9,
+        "Exp_NoseSneerL": 0.6,
+        "Exp_NoseSneerR": 0.6,
+        "Exp_MouthUpperUp": 0.6,
+        "Exp_MouthFrown": 0.4,
+        "Exp_MouthFrownStretch": 0.2,
+        "Exp_BrowDownL": 0.6,
+        "Exp_BrowDownR": 0.6,
+        "Exp_SquintL": 0.6,
+        "Exp_SquintR": 0.6
+      },
+      "jaw_deg": 0,
+      "eyes": {"yaw": 0, "pitch": -4}
+    },
+    {
+      "name": "Contempt",
+      "description": "One nostril and lip corner lifted, lips pressed, one eye narrowed; gaze slides off to the side.",
+      "morphs": {
+        "Exp_NoseSneerL": 0.9,
+        "Exp_MouthUpperUp": 0.25,
+        "Exp_LipsPartSide": 0.25,
+        "Exp_MouthPress": 0.45,
+        "Exp_MouthFrown": 0.2,
+        "Exp_SquintR": 0.5,
+        "Exp_BrowDownR": 0.45,
+        "Exp_BrowOuterUpL": 0.35,
+        "Exp_BlinkL": 0.15,
+        "Exp_BlinkR": 0.15
+      },
+      "jaw_deg": 0,
+      "eyes": {"yaw": -14, "pitch": -4}
+    },
+    {
+      "name": "Pain",
+      "description": "Hit reaction: eyes clenched, brows knotted, nose scrunched, teeth bared in a grimace, neck tense.",
+      "morphs": {
+        "Exp_SquintL": 0.85,
+        "Exp_SquintR": 0.85,
+        "Exp_BlinkL": 0.5,
+        "Exp_BlinkR": 0.5,
+        "Exp_BrowDownL": 0.5,
+        "Exp_BrowDownR": 0.5,
+        "Exp_BrowInnerUpL": 0.6,
+        "Exp_BrowInnerUpR": 0.6,
+        "Exp_NoseScrunch": 0.65,
+        "Exp_MouthStretch": 0.75,
+        "Exp_MouthFrownStretch": 0.3,
+        "Exp_MouthUpperUp": 0.5,
+        "Exp_NeckTense": 0.6
+      },
+      "jaw_deg": 4,
+      "eyes": {"yaw": 0, "pitch": 0}
+    },
+    {
+      "name": "Confused",
+      "description": "Sceptical: one brow arched high, the other pulled down over a narrowed eye, mouth pulled to the side.",
+      "morphs": {
+        "Exp_BrowOuterUpL": 1.0,
+        "Exp_BrowUpL": 0.6,
+        "Exp_BrowDownR": 0.75,
+        "Exp_SquintR": 0.6,
+        "Exp_MouthPress": 0.3,
+        "Exp_LipsPartSide": 0.35,
+        "Exp_MouthFrown": 0.2
+      },
+      "jaw_deg": 0,
+      "eyes": {"yaw": 8, "pitch": 4}
+    },
+    {
+      "name": "Tired",
+      "description": "Half-closed eyes, slack mouth, brows drooping up in the middle; gaze low.",
+      "morphs": {
+        "Exp_BlinkL": 0.55,
+        "Exp_BlinkR": 0.55,
+        "Exp_BrowInnerUpL": 0.3,
+        "Exp_BrowInnerUpR": 0.3,
+        "Exp_MouthFrown": 0.2,
+        "Exp_LipsPart": 0.3
+      },
+      "jaw_deg": 3,
+      "eyes": {"yaw": 0, "pitch": -8}
+    },
+    {
+      "name": "Wink",
+      "description": "Left eye shut with a cheeky half-smile; the open side's brow lifts.",
+      "morphs": {
+        "Exp_BlinkL": 1.0,
+        "Exp_SquintL": 0.35,
+        "Exp_BrowDownL": 0.2,
+        "Exp_BrowUpR": 0.35,
+        "Exp_MouthSmile": 0.5,
+        "Exp_MouthSmileWide": 0.3,
+        "Exp_LipsPartSide": 0.3
+      },
+      "jaw_deg": 0,
+      "eyes": {"converge": 0.6}
+    },
+    {
+      "name": "Determined",
+      "description": "Brows down, eyes narrowed, lips pressed into a hard line. Ready to fight.",
+      "morphs": {
+        "Exp_BrowDownL": 0.85,
+        "Exp_BrowDownR": 0.85,
+        "Exp_SquintL": 0.55,
+        "Exp_SquintR": 0.55,
+        "Exp_MouthPress": 0.8,
+        "Exp_MouthFrown": 0.15,
+        "Exp_NoseFlareL": 0.4,
+        "Exp_NoseFlareR": 0.4,
+        "Exp_NeckTense": 0.25
+      },
+      "jaw_deg": 0,
+      "eyes": {"converge": 0.6}
+    },
+    {
+      "name": "Flirty",
+      "description": "Bedroom eyes: lids lowered, small smile with a hint of pucker, one brow up, sideways glance.",
+      "morphs": {
+        "Exp_BlinkL": 0.35,
+        "Exp_BlinkR": 0.35,
+        "Exp_SquintL": 0.2,
+        "Exp_SquintR": 0.2,
+        "Exp_MouthSmile": 0.6,
+        "Exp_MouthPucker": 0.25,
+        "Exp_LipsPartSide": 0.2,
+        "Exp_BrowUpL": 0.35,
+        "Exp_BrowOuterUpR": 0.2,
+        "Exp_MouthSmileWide": 0.15
+      },
+      "jaw_deg": 0,
+      "eyes": {"yaw": 10, "pitch": 2}
+    },
+    {
+      "name": "Bored",
+      "description": "Lids half down, eyes rolled up and away, mouth flat and slightly pressed.",
+      "morphs": {
+        "Exp_BlinkL": 0.4,
+        "Exp_BlinkR": 0.4,
+        "Exp_BrowOuterUpL": 0.2,
+        "Exp_BrowOuterUpR": 0.2,
+        "Exp_MouthFrown": 0.25,
+        "Exp_MouthPress": 0.3
+      },
+      "jaw_deg": 0,
+      "eyes": {"yaw": -10, "pitch": 5}
+    },
+    {
+      "name": "Talking_A",
+      "description": "Viseme 'ah': jaw dropped a little with the lips relaxed apart.",
+      "morphs": {
+        "Exp_MouthOpen": 0.3,
+        "Exp_LipsPart": 0.3,
+        "Exp_MouthStretch": 0.15
+      },
+      "jaw_deg": 7,
+      "eyes": {"converge": 0.6}
+    },
+    {
+      "name": "Talking_E",
+      "description": "Viseme 'ee': lips stretched wide and parted over the teeth.",
+      "morphs": {
+        "Exp_MouthStretch": 0.7,
+        "Exp_LipsPart": 0.5,
+        "Exp_MouthSmile": 0.2
+      },
+      "jaw_deg": 3,
+      "eyes": {"converge": 0.6}
+    },
+    {
+      "name": "Talking_O",
+      "description": "Viseme 'oh/oo': lips funnelled forward with the jaw slightly open.",
+      "morphs": {
+        "Exp_MouthFunnel": 0.7,
+        "Exp_MouthPucker": 0.2,
+        "Exp_LipsPart": 0.2
+      },
+      "jaw_deg": 7,
+      "eyes": {"converge": 0.6}
+    },
+    {
+      "name": "Talking_M",
+      "description": "Viseme 'm/b/p': lips pressed together.",
+      "morphs": {
+        "Exp_MouthPress": 0.8,
+        "Exp_MouthPucker": 0.1
+      },
+      "jaw_deg": 0,
+      "eyes": {"converge": 0.6}
+    },
+    {
+      "name": "Blink",
+      "description": "Both lids closed (the 1.0 of a 0 -> 1 -> 0 blink curve); brows unchanged.",
+      "morphs": {
+        "Exp_BlinkL": 1.0,
+        "Exp_BlinkR": 1.0,
+        "Exp_SquintL": 0.1,
+        "Exp_SquintR": 0.1
+      },
+      "jaw_deg": 0,
+      "eyes": {"yaw": 0, "pitch": -5}
+    },
+    {
+      "name": "Eyes_Left",
+      "description": "Both eyes turned to the character's left (yaw +22), lids unchanged.",
+      "morphs": {},
+      "jaw_deg": 0,
+      "eyes": {"yaw": 22, "pitch": 0}
+    },
+    {
+      "name": "Eyes_Right",
+      "description": "Both eyes turned to the character's right (yaw -22), lids unchanged.",
+      "morphs": {},
+      "jaw_deg": 0,
+      "eyes": {"yaw": -22, "pitch": 0}
+    },
+    {
+      "name": "Eyes_Up",
+      "description": "Both eyes looking up (pitch +18); upper lids and brows follow a little.",
+      "morphs": {
+        "Exp_EyeWideL": 0.45,
+        "Exp_EyeWideR": 0.45,
+        "Exp_BrowUpL": 0.3,
+        "Exp_BrowUpR": 0.3
+      },
+      "jaw_deg": 0,
+      "eyes": {"yaw": 0, "pitch": 15}
+    },
+    {
+      "name": "Eyes_Down",
+      "description": "Both eyes looking down (pitch -18); upper lids follow the gaze down.",
+      "morphs": {
+        "Exp_BlinkL": 0.2,
+        "Exp_BlinkR": 0.2
+      },
+      "jaw_deg": 0,
+      "eyes": {"yaw": 0, "pitch": -18}
+    },
+    {
+      "name": "Asleep",
+      "description": "Eyes closed and relaxed (not squeezed), brows soft, jaw slack with lips parted.",
+      "morphs": {
+        "Exp_BlinkL": 1.0,
+        "Exp_BlinkR": 1.0,
+        "Exp_BrowUpL": 0.1,
+        "Exp_BrowUpR": 0.1,
+        "Exp_LipsPart": 0.35,
+        "Exp_MouthFrown": 0.1
+      },
+      "jaw_deg": 4,
+      "eyes": {"yaw": 0, "pitch": -10}
+    }
+  ]
+}
