@@ -111,3 +111,20 @@ On the character's skeletal mesh component (after assigning the instances):
   stays "Color"/"Linear Color"; if you re-import by hand, do the same or change the sampler type.
 - The female body has no beard texture; `MI_Skin_Female` keeps the male beard texture as the
   parent default with `BeardAmount` 0.
+
+## Importing the characters
+
+`import_characters.py` imports `Art/Characters/Base/SK_BaseBody_Male.fbx` and
+`SK_BaseBody_Female.fbx` into `/Game/ZombieMMO/Characters/` on one shared skeleton
+(`SK_BaseBody_Male_Skeleton`), with morph targets and vertex colours (the HideMask), no FBX
+materials and no physics asset. It then assigns `MI_Skin_Male` / `MI_Skin_Female`, `MI_Eyes`
+and `MI_Mouth` by slot name, generates LOD1-3 at 50 / 25 / 10 %, checks for 85 morph targets
+and 56 bones, and prints a report to the Output Log. Any `Art/Characters/Test/*.fbx` and
+`Art/Characters/Clothing/*.fbx` are imported onto the same skeleton. Run `setup_comic_look.py`
+first (the instances must exist), then Tools > **Execute Python Script** >
+`Tools/Unreal/import_characters.py`. Existing meshes are skipped unless `REIMPORT = True` at
+the top of the script; on 5.5 the script forces the legacy FBX importer for its own imports
+(`USE_INTERCHANGE = True` switches to Interchange, which is asynchronous: run it twice).
+
+How the meshes are assembled into `BP_PlayerCharacter`, the character creator, replication,
+save/load and the face AnimBP layer is in `Docs/Art/Character_Assembly.md`.
