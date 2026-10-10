@@ -36,7 +36,7 @@ from PIL import Image, ImageDraw, ImageFilter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import paint_base_body as pb  # noqa: E402
-from comic_paint import CORE_MUL, HALF_MUL, SKIN, THROAT, luminance, mouth_cavity  # noqa: E402
+from comic_paint import CORE_MUL, HALF_MUL, INK, SKIN, THROAT, luminance, mouth_cavity, underwear_mask  # noqa: E402
 
 REPO_ROOT = pb.REPO_ROOT
 BASE_DIR = pb.BASE_DIR
@@ -275,8 +275,12 @@ def strip_outline(img, mask, ring=None, reach=None):
     reach = OUTLINE_REACH if reach is None else reach
     lum = img @ np.array([0.3, 0.59, 0.11], np.float32)
     sat = img.max(axis=2) - img.min(axis=2)
-    dark = (lum < 0.30) & mask
     band = mask & ~morph(mask, ring, False)
+    # The grey underwear is darker than lum 0.30 too, and its hem / waistband ink touches the
+    # silhouette: without this the removal ate 40 px into the garment from each side and refilled
+    # it from the nearest skin (grey blocks on the front boxers, a skin-coloured swirl on the back).
+    # Everything inside the garment (plus 5 px for its seam lines) stays, except the silhouette ring.
+    dark = (lum < 0.30) & mask & ~(morph(cloth_region(img, mask), 5, True) & ~band)
     cur = dark & band
     for _ in range(reach):
         grown = cur.copy()
@@ -293,6 +297,44 @@ def strip_outline(img, mask, ring=None, reach=None):
     return pb.dilate(img, mask & ~outline, ring + reach + 2) * mask[:, :, None]
 
 
+def cloth_region(img, mask):
+    """The grey garment (underwear) of a body drawing: the big neutral-grey blob, holes closed."""
+    lum = img @ np.array([0.3, 0.59, 0.11], np.float32)
+    sat = img.max(axis=2) - img.min(axis=2)
+    grey = (sat < 0.10) & (lum > 0.12) & (lum < 0.50) & mask
+    region = morph(morph(grey, 8, True), 8, False)          # close the ink lines and hatching inside
+    region = morph(morph(region, 4, False), 4, True)        # drop thin grey slivers (shaded skin edges)
+    return region & mask if region.sum() > 2000 else np.zeros_like(mask)
+
+
+def clean_cloth(img, mask):
+    """The garment of a body drawing reduced to its base cloth tone plus its seam lines.
+
+    The drawings shade the boxers with hatched masses, dark blocks and a mottled swirl on the
+    buttocks, which projected onto the model as patches. Only the low-frequency tone is replaced
+    (one flat grey, the median of the garment); real ink stays: thin dark lines (the waistband,
+    hems, the crotch and buttock seams), not the hatched masses (ink density over 35 % in a
+    13 px window) and not the broad shading. The engine's own shading does the rest."""
+    region = cloth_region(img, mask)
+    if not region.any():
+        return img
+    lum = img @ np.array([0.3, 0.59, 0.11], np.float32)
+    inner = region & (lum > 0.12)
+    base_lum = float(np.median(lum[inner]))
+    base = np.median(img[inner & (np.abs(lum - base_lum) < 0.04)], axis=0).astype(np.float32)
+    ink = region & (lum < 0.62 * base_lum)
+    thin = ink & ~morph(morph(ink, 3, False), 3, True)      # lines up to ~6 px, not masses
+    hatch = blur_f(ink.astype(np.float32), 6.0) > 0.35
+    keep = thin & ~morph(hatch, 2, True)
+    keep_w = np.clip(blur_f(keep.astype(np.float32), 0.7) * 1.5, 0, 1)
+    flat = np.broadcast_to(base, img.shape)
+    cloth = flat * (1 - keep_w)[:, :, None] + np.minimum(img, flat) * keep_w[:, :, None]
+    region_w = blur_f(region.astype(np.float32), 1.0)
+    out = img * (1 - region_w)[:, :, None] + cloth * region_w[:, :, None]
+    print("  cloth: %d px, base tone %s (lum %.3f), ink kept %d px of %d" % (region.sum(), np.round(base, 3), base_lum, keep.sum(), ink.sum()))
+    return np.clip(out, 0, 1).astype(np.float32)
+
+
 def body_source(img, mask):
     """A body drawing prepared for sampling: outline ink removed, colours extended 60 px past the
     silhouette (texels at grazing angles map a little outside it), and the EDGE_BAND px just inside
@@ -300,7 +342,7 @@ def body_source(img, mask):
     shoulders and arms, sides of the legs) all map into the drawing's last few edge pixels, so any
     line or highlight there is stretched into streaks across 2-3 cm of skin; the engine draws the
     outline on those surfaces anyway, so the band is better plain."""
-    src = pb.dilate(strip_outline(img, mask), mask, 60)
+    src = pb.dilate(clean_cloth(strip_outline(img, mask), mask), mask, 60)
     inner = morph(mask, EDGE_BAND, False)
     return np.where(inner[:, :, None], src, blur_f(src, EDGE_BLUR))
 
@@ -327,8 +369,13 @@ def project_view(mesh_obj, P, N, ref_img, mirror_x):
     cell = np.clip(by.astype(int), 0, H - 1) * W + np.clip(bx.astype(int), 0, W - 1)
     nearest = np.full(W * H, -np.inf, np.float32)
     np.maximum.at(nearest, cell, depth)
-    visible = depth >= nearest[cell] - 0.012
-    facing = pb.smoothstep(0.1, 0.45, N[:, 1] * depth_sign)
+    # A texel just past the silhouette of this view (self-occluded by a few cm) still samples the
+    # drawing's plain edge band, so it may blend; one hidden behind another part (inner thigh,
+    # armpit, under the chin: several cm deeper) may not. The front and back then cross over
+    # smoothly across the sides (full weight 17 deg before the silhouette, zero 17 deg past it)
+    # instead of meeting at a hard visibility cut.
+    visible = pb.smoothstep(SIDE_GATE, 0.012, nearest[cell] - depth)
+    facing = pb.smoothstep(-SIDE_BLEND, SIDE_BLEND, N[:, 1] * depth_sign)
     return colour, facing * visible
 
 
@@ -716,7 +763,7 @@ FACE_REGIONS = {
 }
 
 STRIP_REGIONS = {name: [poly for polys in regions.values() for poly in polys] for name, regions in FACE_REGIONS.items()}
-STRIP_REGIONS["Male_Back"] = [[(225, 0), (375, 0), (375, 150), (225, 150)]]        # back of the hair, down the nape
+STRIP_REGIONS["Male_Back"] = [[(225, 0), (375, 0), (375, 112), (225, 112)]]        # back of the hair, down the nape (the trapezius below y=112 is drawn skin)
 STRIP_REGIONS["Male_Front"] = [[(440, 0), (590, 0), (590, 152), (440, 152)]]       # whole head (hair, beard)
 # Drawings whose dark masses are found automatically on top of the regions (the face close-ups);
 # on the full-body drawings that would also catch armpit shadows and nipples.
@@ -767,6 +814,11 @@ def strip_hair(img, name=None):
         dark = (lum < 0.16) & body
         mass = morph(morph(dark, 4, False), 7, True)            # open: drop thin ink, keep masses
         mass = morph(morph(mass, 3, True), 3, False)            # close small holes
+        if "_Face" not in name and name in STRIP_REGIONS:
+            # Full-body drawing: only the masses at the hair region count. The dark crotch of the
+            # boxers in Male_Back.png was taken for a hair mass and painted over with a round
+            # skin fill, which landed on the model's buttocks as a skin-coloured swirl.
+            mass &= morph(polygon_mask(body.shape, STRIP_REGIONS[name]), 20, True)
     if name in STRIP_REGIONS:
         mass |= polygon_mask(body.shape, STRIP_REGIONS[name])
     mass = morph(mass, 6, True) & body                          # take a margin of the lighter strokes too
@@ -799,20 +851,35 @@ SCRATCH_BAND = 14   # px around a stripped mass that is checked for stray stroke
 SCRATCH_DEV = 0.07  # luminance difference from the clean skin fill that counts as a stroke
 
 
-def strengthen_ink(img, body, gain=0.6):
-    """Darken and slightly widen the drawing's ink so it survives projection.
+def strengthen_ink(img, body, gamma=2.0, grow=1):
+    """Darken and widen the drawing's ink so it survives projection (levels on the dark pixels).
 
-    The face drawings' lines are 1-2 px (about 1 mm on the head); projected and filtered they
-    come out as faint brown scratches. The Borderlands look wants the lid wedge, nostrils, mouth
-    corners and jaw line to read as heavy ink, so dark pixels are pushed towards black and grown
-    by about a pixel. No new lines are invented: only what the drawing already has gets heavier.
+    The face drawings' lines are 1-2 px (about 1 mm on the head); projected and filtered they come
+    out as faint brown scratches. The Borderlands look wants the lid wedge, nostrils, mouth line
+    and nasolabial fold to read as heavy ink, so everything below luminance INK_LEVEL gets a
+    power curve (`gamma`) that pushes it towards black, the darkest pixels settle on the palette's
+    warm black INK (never pure black), and the result is grown by `grow` px. The mid-tone hatching
+    on the nose sides and cheeks (lum > INK_LEVEL) is shading and stays a soft brown. No new lines
+    are invented: only what the drawing already has gets heavier.
     """
     lum = img @ np.array([0.3, 0.59, 0.11], np.float32)
-    # Only real ink (lum < ~0.3) counts: the drawing's mid-tone hatching on the nose sides and
-    # cheeks is shading and must stay a soft brown, or the nose turns into black smudges.
-    ink = pb.smoothstep(0.32, 0.14, lum) * body
-    ink = np.maximum(ink, blur_f(ink, 0.7) * 0.9)
-    return np.clip(img * (1 - gain * ink)[:, :, None], 0, 1).astype(np.float32)
+    ink_lum = float(luminance(INK[None])[0])
+    target = INK_LEVEL * np.power(np.clip(lum, 1e-4, INK_LEVEL) / INK_LEVEL, gamma)
+    target = np.maximum(target, ink_lum)
+    f = np.where((lum < INK_LEVEL) & body, target / np.maximum(lum, 1e-4), 1.0).astype(np.float32)
+    f = np.minimum(f, 1.0)
+    for _ in range(grow):  # grow the darkening by a pixel each side (4-neighbour minimum)
+        g = f.copy()
+        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            g = np.minimum(g, np.roll(f, (dy, dx), axis=(0, 1)))
+        f = np.where(body, g * FACE_INK_RING + f * (1 - FACE_INK_RING), f)
+    f = np.minimum(f, blur_f(f, 0.6))
+    out = img * f[:, :, None]
+    # Pixels that went very dark take the warm black's hue instead of whatever the darkened pixel had.
+    new_lum = lum * f
+    warm = pb.smoothstep(0.16, 0.09, new_lum) * body
+    out = out * (1 - warm)[:, :, None] + INK * (np.maximum(new_lum, ink_lum) / ink_lum)[:, :, None] * warm[:, :, None]
+    return np.clip(out, 0, 1).astype(np.float32)
 
 
 def layer_masks(img, name):
@@ -854,7 +921,7 @@ def load_ref(name, plain_head=False, contrast=1.0, ink=0.0):
         img, mass = strip_hair(img, name)
         Image.fromarray((mass * 255).astype(np.uint8)).save(os.path.join(REF_DIR, name + "_HairMask.png"))
     if ink > 0:
-        img = strengthen_ink(img, drawing_mask(img), ink)
+        img = strengthen_ink(img, drawing_mask(img), ink, FACE_INK_GROW)
     return img
 
 
@@ -895,6 +962,91 @@ def match_tone(colour, w, ref_colour, ref_w, z=None):
     gains[1:-1] = 0.25 * gains[:-2] + 0.5 * gains[1:-1] + 0.25 * gains[2:]
     g = np.stack([np.interp(z, centres, gains[:, c]) for c in range(3)], 1)
     return np.clip(colour * g, 0, 1)
+
+
+def skin_tone_stats(colour, sel):
+    """Median HSV of the lit skin (upper half by luminance of the skin-coloured texels in `sel`),
+    and the luminance ratio of the shaded half to it. None with too few skin texels."""
+    c = colour[sel]
+    lum = luminance(c)
+    sat = c.max(axis=1) - c.min(axis=1)
+    skin = (lum > 0.3) & (sat > 0.12) & (c[:, 0] > c[:, 2])
+    if skin.sum() < 2000:
+        return None
+    s, l = c[skin], lum[skin]
+    split = np.median(l)
+    lit, shade = s[l >= split], s[l < split]
+    h, sa, v = (float(np.median(x)) for x in rgb_to_hsv(lit))
+    lit_lum = float(np.median(luminance(lit)))
+    return h, sa, v, lit_lum, float(np.median(luminance(shade))) / lit_lum
+
+
+def match_skin_tone(colour, sel, ref_colour, ref_sel):
+    """HSV transfer of the skin in `colour` so its lit skin (median hue / saturation / value of the
+    lit half of the skin texels in `sel`) equals that of `ref_colour[ref_sel]`. Only skin-coloured
+    pixels change (skinness weight as in grade_image): cloth, ink and eyes keep their colours.
+    The shading depth is not matched: the front's shade half is its few deep shadows, the back's
+    is its all-over hatching, and matching the ratio only deepened the hatching.
+
+    The back drawing is graded like the front one, but its lit skin is measured on a drawing that
+    is hatched almost everywhere, so after projection the back texels came out darker and greyer
+    than the front's; this matches them on the projected texels themselves."""
+    st, ref = skin_tone_stats(colour, sel), skin_tone_stats(ref_colour, ref_sel)
+    if st is None or ref is None:
+        return colour
+    h, s, v = rgb_to_hsv(colour)
+    graded = hsv_to_rgb((h + (ref[0] - st[0])) % 1.0, np.clip(s * ref[1] / max(st[1], 1e-3), 0, 1),
+                        np.clip(v * ref[2] / max(st[2], 1e-3), 0, 1))
+    sat = colour.max(axis=1) - colour.min(axis=1)
+    skinness = pb.smoothstep(0.06, 0.16, sat) * pb.smoothstep(0.0, 0.08, colour[:, 0] - colour[:, 2])
+    print("  skin tone match: H %.3f->%.3f S %.3f->%.3f V %.3f->%.3f (shade ratio %.3f vs %.3f, left alone)" % (
+        st[0], ref[0], st[1], ref[1], st[2], ref[2], st[4], ref[4]))
+    return np.clip(colour * (1 - skinness[:, None]) + graded * skinness[:, None], 0, 1).astype(np.float32)
+
+
+def even_cloth(colour, P, sel, cell=0.01):
+    """Flatten the low-frequency tone of the garment texels `sel` to one grey (their median),
+    keeping the ink (texels well below the median) and the grain. Front and back cloth then meet
+    at the sides at one tone, and any left-over shading patch of the drawings goes."""
+    lum = luminance(colour)
+    base = float(np.median(lum[sel]))
+    ink_w = pb.smoothstep(0.75 * base, 0.55 * base, lum)
+    mean = np.ones_like(lum)
+    mean[sel] = local_mean(P, sel, np.where(ink_w < 0.5, lum, base))
+    gain = np.clip(base / np.maximum(mean, 1e-3), 0.7, 1.4) * (1 - ink_w) + ink_w
+    print("  cloth texels %d, base lum %.3f, local mean p10/p90 %.3f/%.3f" % (sel.sum(), base, *np.percentile(mean[sel], [10, 90])))
+    out = colour.copy()
+    out[sel] = np.clip(colour[sel] * gain[sel, None], 0, 1)
+    return out
+
+
+def even_skin(colour, P, N, head_w, lm, strength, cell=0.01):
+    """Even the low-frequency tone of the body skin towards the front chest's lit tone.
+
+    The drawings shade the sides of the torso and limbs darker and hatch the back densely, so
+    the projected skin carried dark bands along the sides (where the front and back drawings
+    meet) and a browner back. The local mean luminance (3 x `cell` m window, ink left out) is
+    pulled towards the chest's lit median by `strength` (a power: 1 = fully flat), lifting the
+    dark zones; the ink and the hatching strokes keep their contrast to the skin around them.
+    The head and the graded neck zone are left alone."""
+    lum = luminance(colour)
+    sat = colour.max(axis=1) - colour.min(axis=1)
+    skin = (head_w < 0.1) & (P[:, 2] < lm.chin[2] - NECK_FADE) & (lum > 0.3) & (sat > 0.12) & (colour[:, 0] > colour[:, 2])
+    skin &= np.abs(P).sum(axis=1) > 0  # not the off-island texels, which the bake leaves at the origin
+    chest = skin & (-N[:, 1] > 0.6) & (np.abs(P[:, 0]) < 0.15) & (P[:, 2] > 1.25) & (P[:, 2] < 1.45)
+    if chest.sum() < 500 or skin.sum() < 5000:
+        return colour
+    ref = float(np.median(lum[chest][lum[chest] >= np.median(lum[chest])]))
+    mean = np.full_like(lum, ref)
+    mean[skin] = local_mean(P, skin, np.where(lum > 0.35, lum, ref), cell)
+    gain = np.clip(np.power(ref / np.maximum(mean, 1e-3), strength), 0.9, 1.35)
+    ink_w = pb.smoothstep(0.35, 0.22, lum)
+    gain = gain * (1 - ink_w) + ink_w * (0.5 + 0.5 * gain)  # ink lifts half as much: stays dark against lifted skin
+    print("  skin evening: ref %.3f, local mean p10/p50/p90 %.3f/%.3f/%.3f -> gain p10/p90 %.2f/%.2f" % (
+        ref, *np.percentile(mean[skin], [10, 50, 90]), *np.percentile(gain[skin], [10, 90])))
+    out = colour.copy()
+    out[skin] = np.clip(colour[skin] * gain[skin, None], 0, 1)
+    return out
 
 
 def fill_from_nearest(P, fill, src, colour, cell=0.002, steps=80):
@@ -1006,9 +1158,28 @@ def main():
         colour_b, w_b = project_view(mesh_obj, P, N, soft_copy(front, drawing_mask(front)), mirror_x=True)
         w_b *= 0.999
     colour_fill, _ = project_view(mesh_obj, P, N, soft_copy(front, drawing_mask(front)), mirror_x=False)
+    # One skin: the back's lit skin tone and shading depth follow the front's (measured on the
+    # body texels each view owns outright, head and underwear excluded).
+    under, _, _ = underwear_mask(P, lm, False)
+    own = (head_w < 0.1) & (under < 0.5)
+    colour_b = match_skin_tone(colour_b, own & (w_b > 0.9) & (N[:, 1] > 0.7), colour_f, own & (w_f > 0.9) & (-N[:, 1] > 0.7))
     total = np.clip(w_f + w_b, 0, 1)
     body = (colour_f * w_f[:, None] + colour_b * w_b[:, None]) / np.maximum(w_f + w_b, 1e-6)[:, None]
     body = body * total[:, None] + colour_fill * (1 - total)[:, None]
+    # The underwear: one flat grey with its seam lines (clean_cloth did the drawings; this evens
+    # what the two views and the fill still disagree on). Garment texels = grey texels around the
+    # pelvis, plus whatever the 3D briefs mask covers that came out grey.
+    lum_b = luminance(body)
+    sat_b = body.max(axis=1) - body.min(axis=1)
+    pelvis_z = lm.bone_head["pelvis"][2]
+    grey_b = (sat_b < 0.10) & (lum_b > 0.10) & (lum_b < 0.45)
+    cloth = grey_b & (P[:, 2] > pelvis_z - 0.30) & (P[:, 2] < pelvis_z + 0.12)
+    print("  3D briefs mask vs drawn garment: %.1f%% of mask texels are grey, %.1f%% of grey texels inside mask" % (
+        100 * grey_b[under > 0.5].mean(), 100 * (under[cloth] > 0.5).mean()))
+    if cloth.sum() > 1000:
+        body = even_cloth(body, P, cloth)
+    if SKIN_EVEN > 0:
+        body = even_skin(body, P, N, head_w, lm, SKIN_EVEN, SKIN_EVEN_CELL)
 
     # --- Head: face drawings matched by landmarks (front + profile), back of the head from the back view.
     drawn = body
@@ -1121,12 +1292,19 @@ def main():
     pb.hook_up_materials(body_name, blend_path, colour_file=f"T_Body_{body_name}_BaseColor_Drawn.png")
 
 
-FACE_INK = 0.6    # how much the face drawings' ink is strengthened before projection (strengthen_ink)
+FACE_INK = 2.5    # power curve applied to the face drawings' dark pixels before projection (strengthen_ink)
+FACE_INK_GROW = 1  # px the face ink is widened by
+FACE_INK_RING = 0.85  # strength of the widening ring (1 = the full darkness of the line next to it)
+INK_LEVEL = 0.35   # luminance below which a face drawing pixel counts as ink for the levels
 OUTLINE_RING = 6   # px inside the body drawings' silhouette that count as outline ink (strip_outline)
 EDGE_BAND = 10     # px inside the body drawings' silhouette that are blurred plain (body_source)
 EDGE_BLUR = 5      # sigma of that blur
 OUTLINE_REACH = 40  # px the outline removal follows connected dark pixels inwards (shoulder-top black masses)
 NECK_FADE = 0.16  # m below the chin where the neck grading has faded back to the body drawing's tone
+SKIN_EVEN = 0.6    # how far the body skin's low-frequency tone is pulled to the chest's lit tone (even_skin)
+SKIN_EVEN_CELL = 0.01  # m: the evening works on 3 x this window
+SIDE_BLEND = 0.30  # sin of the half-angle over which the front and back drawings cross over at the sides
+SIDE_GATE = 0.05   # m of self-occlusion a texel may have past a view's silhouette and still blend from it
 
 
 if __name__ == "__main__":
