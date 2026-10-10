@@ -479,6 +479,49 @@ def assign_materials(basemesh, eye_verts, mouth_verts):
     for loop in eye_loops:
         uv = loop[uv_layer].uv
         loop[uv_layer].uv = (0.02 + 0.96 * (uv.x - min(us)) / size, 0.02 + 0.96 * (uv.y - min(vs)) / size)
+
+    # The mouth gets its own texture too (T_Mouth_*, painted by paint_mouth.py). In the body
+    # layout its three islands sit in a corner at ~0.5 texels/mm, so they are packed into their
+    # own 0..1 square: upper teeth on top, lower teeth in the middle, tongue at the bottom (turned
+    # on its side so it runs along U). MPFB's islands are clean, so they are only moved and
+    # scaled, never re-unwrapped: the result is the same on every build and for both bodies.
+    deform = bm.verts.layers.deform.verify()
+    head_group = basemesh.vertex_groups["head"].index
+    pending = {f for f in bm.faces if f.material_index == 2}
+    islands = []
+    while pending:
+        island, stack = set(), [min(pending, key=lambda f: f.index)]
+        while stack:
+            f = stack.pop()
+            if f in island:
+                continue
+            island.add(f)
+            pending.discard(f)
+            stack.extend(n for v in f.verts for n in v.link_faces if n in pending)
+        on_head = any(head_group in v[deform] for f in island for v in f.verts)
+        islands.append((on_head, len(island), island))
+    if len(islands) == 3:
+        # upper teeth (head bone), lower teeth (jaw, fewer faces), tongue (jaw, most faces)
+        upper = next(i for i in islands if i[0])[2]
+        lower, tongue = [i[2] for i in sorted((i for i in islands if not i[0]), key=lambda i: i[1])]
+        bands = ((upper, 0.70, 0.98, False), (lower, 0.40, 0.68, False), (tongue, 0.02, 0.38, True))
+        for island, v0, v1, sideways in bands:
+            loops = [loop for f in island for loop in f.loops]
+            if sideways:  # (u, v) -> (v, -u): the long axis along U
+                for loop in loops:
+                    uv = loop[uv_layer].uv
+                    loop[uv_layer].uv = (uv.y, -uv.x)
+            us = [loop[uv_layer].uv.x for loop in loops]
+            vs = [loop[uv_layer].uv.y for loop in loops]
+            w, h = max(us) - min(us), max(vs) - min(vs)
+            scale = min(0.96 / w, (v1 - v0) / h)
+            u_off = 0.5 - 0.5 * w * scale
+            v_off = (v0 + v1) * 0.5 - 0.5 * h * scale
+            for loop in loops:
+                uv = loop[uv_layer].uv
+                loop[uv_layer].uv = (u_off + (uv.x - min(us)) * scale, v_off + (uv.y - min(vs)) * scale)
+    else:
+        print(f"  WARNING: expected 3 mouth islands, found {len(islands)}; mouth UVs left as they are")
     bm.to_mesh(basemesh.data)
     bm.free()
 
