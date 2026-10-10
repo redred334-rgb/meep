@@ -192,9 +192,23 @@ def anchors(contour):
     left = x < cx
     foot_l = int(np.where(left)[0][np.argmax(y[left])])
     foot_r = int(np.where(~left)[0][np.argmax(y[~left])])
-    return [head, deepest(contour, head, hand_r), hand_r, deepest(contour, hand_r, foot_r), foot_r,
-            deepest(contour, foot_r, foot_l), foot_l, deepest(contour, foot_l, hand_l), hand_l,
-            deepest(contour, hand_l, head)]
+    crotch = deepest(contour, foot_r, foot_l)
+    # The armpit is the deepest point from the hand-to-HIP line, not hand-to-foot: against the
+    # long slanted hand-to-foot line the bulge of the lat can be deeper than the armpit corner
+    # (Male_Back.png: one armpit landed 58 px down the lat, which skewed the TPS on that side
+    # and lifted the boxers' waistband 4 cm on one hip). The hip is the widest point of the
+    # torso side above the crotch, found from the first estimate.
+    n = len(contour)
+
+    def widest(i0, i1, sign):
+        idx = np.arange(i0, i1 + (n if i1 < i0 else 0)) % n
+        idx = idx[y[idx] < y[crotch]]
+        return int(idx[np.argmax(sign * x[idx])]) if len(idx) else i1
+
+    armpit_r = deepest(contour, hand_r, widest(deepest(contour, hand_r, foot_r), foot_r, 1))
+    armpit_l = deepest(contour, widest(foot_l, deepest(contour, foot_l, hand_l), -1), hand_l)
+    return [head, deepest(contour, head, hand_r), hand_r, armpit_r, foot_r,
+            crotch, foot_l, armpit_l, hand_l, deepest(contour, hand_l, head)]
 
 
 def resample(contour, idx, per_segment=16):
@@ -304,7 +318,15 @@ def cloth_region(img, mask):
     grey = (sat < 0.10) & (lum > 0.12) & (lum < 0.50) & mask
     region = morph(morph(grey, 8, True), 8, False)          # close the ink lines and hatching inside
     region = morph(morph(region, 4, False), 4, True)        # drop thin grey slivers (shaded skin edges)
-    return region & mask if region.sum() > 2000 else np.zeros_like(mask)
+    # Only where the pixels really are grey: the anti-aliased edges on both sides of a black ink
+    # band (the shoulder tops) closed into a "grey" strip too, which then protected the band from
+    # the outline strip. The garment is grey nearly everywhere; a black band is grey only at its
+    # edges. Holes the test leaves in the garment's hatched parts are closed again.
+    region &= blur_f(grey.astype(np.float32), 5.0) > 0.4
+    region = morph(morph(region, 8, True), 8, False) & mask
+    if region.sum() < 2000:
+        return np.zeros_like(mask)
+    return largest_blob(region)                             # the one garment, no stray patches
 
 
 def clean_cloth(img, mask):
@@ -1301,7 +1323,7 @@ EDGE_BAND = 10     # px inside the body drawings' silhouette that are blurred pl
 EDGE_BLUR = 5      # sigma of that blur
 OUTLINE_REACH = 40  # px the outline removal follows connected dark pixels inwards (shoulder-top black masses)
 NECK_FADE = 0.16  # m below the chin where the neck grading has faded back to the body drawing's tone
-SKIN_EVEN = 0.6    # how far the body skin's low-frequency tone is pulled to the chest's lit tone (even_skin)
+SKIN_EVEN = 0.75   # how far the body skin's low-frequency tone is pulled to the chest's lit tone (even_skin)
 SKIN_EVEN_CELL = 0.01  # m: the evening works on 3 x this window
 SIDE_BLEND = 0.30  # sin of the half-angle over which the front and back drawings cross over at the sides
 SIDE_GATE = 0.05   # m of self-occlusion a texel may have past a view's silhouette and still blend from it
