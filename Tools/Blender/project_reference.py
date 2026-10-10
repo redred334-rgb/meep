@@ -1284,57 +1284,111 @@ def bake_maps(mesh_obj, res):
     return P, N, head_w, shadow, eye_P, valid
 
 
-def torso_side_fill(body, P, N, w_f, w_b, torso, z0, z1, side_limit, row=0.005):
-    """Flat colour for the sides of the torso between heights z0 and z1 (CLOTH_SIDE_FILL).
+def torso_side_fill(body, P, N, w_f, w_b, torso, z0, z1, side_limit, zones, row=0.005, edge_frac=0.2):
+    """The sides of the torso between heights z0 and z1 (CLOTH_SIDE_FILL): the garments wrap
+    round and the skin between them stays skin.
 
-    Neither body drawing sees the sides squarely: their texels sample the drawings' last edge
-    pixels (rim light, outline remains, half a garment edge), which came out as pale and dark
-    vertical streaks, and the bra band and briefs were not grey all the way round. Per 5 mm row
-    of height and per half (left/right), the colour of the front drawing's and the back drawing's
-    own texels nearest the silhouette (the outermost 30 % by |x| of the squarely seen texels in
-    that row, median so ink does not count) is taken; the side texel then blends the two by its
-    normal (front colour at N.y = -0.45, back colour at +0.45), with the rows smoothed over 1.5 cm
-    so a garment edge becomes a soft step, not a staircase. Texels at |N.y| below `side_limit`
-    are replaced, fading to the projection by `side_limit`."""
+    Neither body drawing sees the sides squarely, and the two disagree about where the garment
+    edges sit on the silhouette (the Female's briefs strap is 2.5 cm tall on the front drawing's
+    hip and 8 cm on the back's; the bra band's top is 2.5 cm higher on the back). Blending the
+    two views' colours there gave grey smears and, with a per-row colour fill, grey blocks
+    with hard edges along the |N.y| = side_limit contours. So the EDGE HEIGHTS are interpolated
+    instead: per 5 mm row and per half (left/right), the outermost `edge_frac` of each view's
+    squarely seen texels (its silhouette) say whether the row is cloth, which gives each view
+    one z-interval per garment zone; a side texel's interval is the two views' blended by its
+    normal (front's at N.y = -side_limit, back's at +side_limit), so the garment edge runs
+    continuously from the front drawing's edge to the back drawing's. Inside the interval the
+    texel is the garment's flat grey (the zone's evened tone, blended front/back); outside, it
+    keeps its own colour unless that is cloth-grey or pale (the views' smear and the drawings'
+    rim light) in which case it takes the row's mean skin tone (mean, ink included, so the band
+    stays as dark as the hatched skin next to it rather than a lighter stripe). Ink keeps."""
+    lum = luminance(body)
+    sat = body.max(axis=1) - body.min(axis=1)
+    grey = (sat < 0.10) & (lum > 0.10) & (lum < 0.45)
     n_rows = int(np.ceil((z1 - z0) / row)) + 1
     band = torso & (P[:, 2] > z0) & (P[:, 2] < z1)
-    zi = np.clip(((P[:, 2] - z0) / row).astype(int), 0, n_rows - 1)  # row of each texel (for the tables)
-    out = body.copy()
-    t_side = pb.smoothstep(side_limit, side_limit - 0.15, np.abs(N[:, 1]))
-    mix = pb.smoothstep(-side_limit, side_limit, N[:, 1])
+    zi = np.clip(((P[:, 2] - z0) / row).astype(int), 0, n_rows - 1)
     centres = z0 + (np.arange(n_rows) + 0.5) * row
-    replaced = 0
+    out = body.copy()
+    mix = pb.smoothstep(-side_limit, side_limit, N[:, 1])
+    replaced_cloth = replaced_skin = 0
     for sign in (1.0, -1.0):
         half = band & (sign * P[:, 0] > 0)
-        rows_rgb = {}
+        tables = {}
         for key, seen in (("f", (-N[:, 1] > 0.6) & (w_f > 0.9)), ("b", (N[:, 1] > 0.6) & (w_b > 0.9))):
             sel = half & seen
-            table = np.full((n_rows, 3), np.nan, np.float32)
+            cloth_frac = np.full(n_rows, np.nan, np.float32)
+            skin_rgb = np.full((n_rows, 3), np.nan, np.float32)
+            grey_rgb = np.full((n_rows, 3), np.nan, np.float32)
             for r in np.unique(zi[sel]):
                 idx = np.nonzero(sel & (zi == r))[0]
                 if len(idx) < 20:
                     continue
                 ax = np.abs(P[idx, 0])
-                edge = idx[ax >= np.percentile(ax, 70)]
-                table[r] = np.median(body[edge], axis=0)
-            have = ~np.isnan(table[:, 0])
+                edge = idx[ax >= np.percentile(ax, 100 * (1 - edge_frac))]
+                g = grey[edge]
+                cloth_frac[r] = g.mean()
+                if (~g).sum() >= 5:
+                    skin_rgb[r] = body[edge[~g]].mean(axis=0)
+                if g.sum() >= 5:
+                    grey_rgb[r] = np.median(body[edge[g]], axis=0)
+            have = ~np.isnan(cloth_frac)
             if have.sum() < 2:
-                rows_rgb = None
+                tables = None
                 break
-            for c in range(3):  # fill the rows without texels, then 3-row box smoothing
-                table[:, c] = np.interp(centres, centres[have], table[have, c])
-                table[:, c] = np.convolve(np.pad(table[:, c], 1, mode="edge"), np.ones(3) / 3, mode="valid")
-            rows_rgb[key] = table
-        if rows_rgb is None:
+            cloth_rows = have & (cloth_frac > 0.6)
+            intervals = []
+            for za, zb in zones:  # the longest run of cloth rows in each garment zone
+                rows = np.nonzero(cloth_rows & (centres > za) & (centres < zb))[0]
+                best = None
+                if len(rows):
+                    runs = np.split(rows, np.nonzero(np.diff(rows) > 1)[0] + 1)
+                    best = max(runs, key=len)
+                if best is None or len(best) < 2:
+                    intervals.append(None)
+                else:
+                    gc = np.nanmedian(grey_rgb[best], axis=0)
+                    intervals.append((centres[best[0]] - row / 2, centres[best[-1]] + row / 2, gc))
+            have_skin = ~np.isnan(skin_rgb[:, 0])
+            skin_tab = np.stack([np.interp(centres, centres[have_skin], skin_rgb[have_skin, c]) for c in range(3)], 1)
+            for c in range(3):  # 3-row box smoothing
+                skin_tab[:, c] = np.convolve(np.pad(skin_tab[:, c], 1, mode="edge"), np.ones(3) / 3, mode="valid")
+            tables[key] = (intervals, skin_tab)
+        if tables is None:
             continue
         side = half & (np.abs(N[:, 1]) < side_limit)
-        # Continuous in height (linear between the row centres), so the rows do not show as steps.
-        col_f = np.stack([np.interp(P[side, 2], centres, rows_rgb["f"][:, c]) for c in range(3)], 1)
-        col_b = np.stack([np.interp(P[side, 2], centres, rows_rgb["b"][:, c]) for c in range(3)], 1)
-        col = col_f * (1 - mix[side])[:, None] + col_b * mix[side][:, None]
-        out[side] = body[side] * (1 - t_side[side])[:, None] + col * t_side[side][:, None]
-        replaced += side.sum()
-    print("  torso side fill z %.3f..%.3f: %d side texels" % (z0, z1, replaced))
+        if not side.any():
+            continue
+        z, m = P[side, 2], mix[side]
+        skin_f = np.stack([np.interp(z, centres, tables["f"][1][:, c]) for c in range(3)], 1)
+        skin_b = np.stack([np.interp(z, centres, tables["b"][1][:, c]) for c in range(3)], 1)
+        skin_col = skin_f * (1 - m)[:, None] + skin_b * m[:, None]
+        cloth_w = np.zeros(side.sum(), np.float32)
+        cloth_col = np.zeros((side.sum(), 3), np.float32)
+        for k, (za, zb) in enumerate(zones):
+            iv_f, iv_b = tables["f"][0][k], tables["b"][0][k]
+            if iv_f is None and iv_b is None:
+                continue
+            iv_f = iv_f or iv_b
+            iv_b = iv_b or iv_f
+            lo = iv_f[0] * (1 - m) + iv_b[0] * m
+            hi = iv_f[1] * (1 - m) + iv_b[1] * m
+            w = pb.smoothstep(lo - 0.003, lo + 0.003, z) * pb.smoothstep(hi + 0.003, hi - 0.003, z)
+            col = iv_f[2][None] * (1 - m)[:, None] + iv_b[2][None] * m[:, None]
+            take = w > cloth_w
+            cloth_col[take] = col[take]
+            cloth_w = np.maximum(cloth_w, w)
+            print("  side %s zone %d: front z %.3f..%.3f, back z %.3f..%.3f" % ("L" if sign > 0 else "R", k, iv_f[0], iv_f[1], iv_b[0], iv_b[1]))
+        own = body[side]
+        own_lum, own_sat = lum[side], sat[side]
+        skin_lum = luminance(skin_col)
+        ink = own_lum < 0.30
+        bad = ~ink & ((own_sat < 0.12) | (own_lum > 1.12 * skin_lum) | (own[:, 0] <= own[:, 2]))
+        skin_part = np.where(bad[:, None], skin_col, own)
+        out[side] = skin_part * (1 - cloth_w)[:, None] + cloth_col * cloth_w[:, None]
+        replaced_cloth += int((cloth_w > 0.5).sum())
+        replaced_skin += int((bad & (cloth_w <= 0.5)).sum())
+    print("  torso side fill z %.3f..%.3f: %d cloth texels, %d smeared skin texels replaced" % (z0, z1, replaced_cloth, replaced_skin))
     return np.clip(out, 0, 1).astype(np.float32)
 
 
@@ -1426,7 +1480,9 @@ def main():
             # One band from the lowest garment's hem to the highest one's top (the waist between
             # them has the same pale rim-light / outline streaks on its sides), torso only.
             g0, g1 = min(e[0] for e in extents) - 0.01, max(e[1] for e in extents) + 0.01
-            body = torso_side_fill(body, P, N, w_f, w_b, on_mesh & (np.abs(P[:, 0]) < 0.18), g0, g1, side_limit)
+            spine_y = lm.bone_head["spine_03"][1]
+            torso = on_mesh & (np.abs(P[:, 0]) < 0.18) & (np.hypot(P[:, 0], P[:, 1] - spine_y) < 0.20)  # not the arms
+            body = torso_side_fill(body, P, N, w_f, w_b, torso, g0, g1, side_limit, zones)
 
     # --- Head: face drawings matched by landmarks (front + profile), back of the head from the back view.
     drawn = body

@@ -2008,7 +2008,7 @@
   "strip": "hair = main mass above/behind the face + ribbons for the loose strands beside the face, the ears and the neck. The ears are left out of the polygons. beard is empty (kept so layer_masks finds the key).",
   "blackout": "Female_Back: a stray strand of hair from the next sheet cell at the left edge (x 0-11, y 78-136) is painted black before anything else.",
   "auto_strip_margin": "On the face drawings the automatic dark-mass strip only counts masses within this many px of the strip polygons: without it the dense hatching under the chin (FaceFront) was taken for a hair mass and filled with a skin disc. The ears in FaceFront are stripped whole (hair crosses them; the profile draws the ears), and FaceSide's black top at the bottom is stripped so no dark mass sits next to the neck.",
-  "soften": "Regions whose dark hatching is turned into a soft warm shadow (strip_hair): the dense hatch under the lower lip projected as a black smear on the chin. FaceSide: the ear hollow (its black fill projected as a blot in the ear).",
+  "soften": "Regions whose dark hatching is turned into a soft warm shadow (strip_hair): the dense hatch under the lower lip projected as a black smear on the chin; the three parallel hatch strokes on each cheekbone (FaceFront x 88-122 and 334-368, y 395-445; FaceSide x 145-180, y 355-405) projected as thick dark dashes on the cheeks. FaceSide: the ear hollow (its black fill projected as a blot in the ear).",
   "hair_polygons": "The FaceFront/FaceSide hair polygons' lower edges follow the drawn hairline (forehead and temples); the first version sat 10-25 px inside the hair and its edge line survived on the forehead."
  },
  "blackout": {
@@ -2056,6 +2056,42 @@
      183,
      546
     ]
+   ],
+   [
+    [
+     82,
+     386
+    ],
+    [
+     130,
+     386
+    ],
+    [
+     130,
+     452
+    ],
+    [
+     82,
+     452
+    ]
+   ],
+   [
+    [
+     326,
+     386
+    ],
+    [
+     376,
+     386
+    ],
+    [
+     376,
+     452
+    ],
+    [
+     326,
+     452
+    ]
    ]
   ],
   "Female_FaceSide": [
@@ -2075,6 +2111,24 @@
     [
      258,
      380
+    ]
+   ],
+   [
+    [
+     138,
+     348
+    ],
+    [
+     188,
+     348
+    ],
+    [
+     188,
+     412
+    ],
+    [
+     138,
+     412
     ]
    ]
   ]

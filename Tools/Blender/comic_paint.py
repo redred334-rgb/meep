@@ -295,6 +295,19 @@ def underwear_mask(P, lm, female, briefs_top=0.035, briefs_leg=0.16):
     along = np.einsum("ij,ij->i", P - thigh_head, axis)
     d_top = top - P[:, 2]
     d_leg = briefs_leg - along
+    if female:
+        # The Female's drawn briefs (Reference/Female_Front.png / _Back.png, measured on the
+        # projected texels) are a high-cut bikini, not the Male's boxers: the top rises from
+        # pelvis + 3.5 cm at the front centre to + 11 cm at the back and over the hips, and the
+        # leg opening is a slanted line from pelvis - 7.7 cm at the crotch up to + 8 cm on the
+        # hip (about 1 cm per cm of |x|; - 3 cm under the buttocks at the back). The planar
+        # top and the thigh-axis leg cut above (the Male's) reached 18 cm down the thighs.
+        pelvis = lm.bone_head["pelvis"][2]
+        backness = smoothstep(-0.15, -0.02, P[:, 1] - lm.bone_head["spine_03"][1])
+        hipness = 0.6 * smoothstep(0.0, 0.12, np.abs(P[:, 0]))
+        d_top = pelvis + 0.035 + 0.075 * np.maximum(backness, hipness) - P[:, 2]
+        leg_z = pelvis + (-0.077 + 0.046 * backness) + (1.0 - 0.15 * backness) * np.minimum(np.abs(P[:, 0]), 0.13)
+        d_leg = P[:, 2] - leg_z
     near_hips = P[:, 2] > lm.bone_head["thigh_l"][2] - 0.35
     inside = np.where(near_hips, np.minimum(d_top, d_leg), -1.0)
     edge_dist = np.abs(inside)
@@ -302,7 +315,12 @@ def underwear_mask(P, lm, female, briefs_top=0.035, briefs_leg=0.16):
     if female and lm.nipple is not None:
         radial = np.linalg.norm(P[:, :2] - np.array([0.0, lm.bone_head["spine_03"][1]], np.float32), axis=1)
         d_low = P[:, 2] - (lm.nipple - 0.075)
-        d_high = (lm.nipple + 0.07) - P[:, 2]
+        # The band's bottom edge is at nipple - 7.5 cm all round on the drawn bra; its top is
+        # nipple + 7 cm only at the cups and straps (|x| over 10 cm): the neckline scoops to
+        # nipple + 0 at the front centre and the back is cut straight at nipple - 2.5 cm.
+        frontness = smoothstep(0.0, -0.10, P[:, 1] - lm.bone_head["spine_03"][1])
+        scoop = -0.025 + 0.025 * frontness
+        d_high = (lm.nipple + scoop + (0.07 - scoop) * smoothstep(0.03, 0.10, np.abs(P[:, 0]))) - P[:, 2]
         bra = np.minimum(np.minimum(d_low, d_high), 0.2 - radial)
         bra_band = smoothstep(0.022, 0.012, d_low) * (bra > 0)
         edge_dist = np.where(bra > inside, np.abs(bra), edge_dist)
