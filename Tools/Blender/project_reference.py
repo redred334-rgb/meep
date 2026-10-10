@@ -259,10 +259,56 @@ def body_silhouette(mesh_obj, mirror_x):
     return np.asarray(img) > 0, (ox, oz, W, H)
 
 
+def strip_outline(img, mask, ring=None, reach=None):
+    """The drawing without its silhouette outline ink, inpainted from the skin just inside.
+
+    The engine draws the silhouette (Sobel post-process), so the drawing's outline must not be in
+    the texture: projected onto the grazing surfaces along the silhouette (shoulder tops, upper
+    edges of the arms, sides of the legs) and extended outwards by the dilation below, it became
+    wide black bands. Outline = ink (lum < 0.3) in the `ring` px band inside the silhouette plus
+    every dark pixel connected to it through dark pixels within `reach` px: that also takes the
+    solid black shading masses the drawing hangs off the outline (the trapezius / shoulder tops
+    are a 14 px black band in Male_Front.png), while interior lines separated from the outline by
+    skin stay. The removed pixels are refilled from the nearest remaining skin pixel.
+    """
+    ring = OUTLINE_RING if ring is None else ring
+    reach = OUTLINE_REACH if reach is None else reach
+    lum = img @ np.array([0.3, 0.59, 0.11], np.float32)
+    sat = img.max(axis=2) - img.min(axis=2)
+    dark = (lum < 0.30) & mask
+    band = mask & ~morph(mask, ring, False)
+    cur = dark & band
+    for _ in range(reach):
+        grown = cur.copy()
+        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            grown |= np.roll(cur, (dy, dx), axis=(0, 1))
+        grown &= dark
+        if (grown == cur).all():
+            break
+        cur = grown
+    # The drawing also has a 2-3 px pale rim light along the silhouette (inside the outline):
+    # anything in the band that is not plain skin (bright or unsaturated) goes too.
+    rim = band & ((lum > 0.70) | (sat < 0.10))
+    outline = morph(cur | rim, 1, True) & mask
+    return pb.dilate(img, mask & ~outline, ring + reach + 2) * mask[:, :, None]
+
+
+def body_source(img, mask):
+    """A body drawing prepared for sampling: outline ink removed, colours extended 60 px past the
+    silhouette (texels at grazing angles map a little outside it), and the EDGE_BAND px just inside
+    the silhouette blurred. Texels on the grazing surfaces along the model's silhouette (tops of the
+    shoulders and arms, sides of the legs) all map into the drawing's last few edge pixels, so any
+    line or highlight there is stretched into streaks across 2-3 cm of skin; the engine draws the
+    outline on those surfaces anyway, so the band is better plain."""
+    src = pb.dilate(strip_outline(img, mask), mask, 60)
+    inner = morph(mask, EDGE_BAND, False)
+    return np.where(inner[:, :, None], src, blur_f(src, EDGE_BLUR))
+
+
 def project_view(mesh_obj, P, N, ref_img, mirror_x):
     """Colour every texel from one drawing. Returns (colour, weight) with weight 0 where unseen."""
     ref_mask = drawing_mask(ref_img)
-    ref_src = pb.dilate(ref_img, ref_mask, 60)  # extend colours past the silhouette for safety
+    ref_src = body_source(ref_img, ref_mask)
 
     body_mask, (ox, oz, W, H) = body_silhouette(mesh_obj, mirror_x)
     body_pts = resample(trace_contour(body_mask), anchors(trace_contour(body_mask)))
@@ -288,7 +334,7 @@ def project_view(mesh_obj, P, N, ref_img, mirror_x):
 
 def soft_copy(img, mask):
     """The drawing with its ink lines dissolved: for filling parts no drawing covers."""
-    src = pb.dilate(img, mask, 60)
+    src = body_source(img, mask)
     pil = Image.fromarray((np.clip(src, 0, 1) * 255).astype(np.uint8))
     soft = np.asarray(pil.filter(ImageFilter.GaussianBlur(14))).astype(np.float32) / 255
     return soft * mask[:, :, None]  # keep the exact silhouette so the anchors still match
@@ -532,8 +578,11 @@ def project_head_view(P, N, img, lm, head_pts, body_name, view, eyes, layers=Non
         depth = np.abs(P[:, 0])
         facing = pb.smoothstep(0.2, 0.75, np.abs(N[:, 0])) ** 2  # front and side cross over at ~45 deg
         # The front view owns the eyes: the profile's outer-corner lash wedge would smudge the temple.
-        d_eye = np.hypot(P[:, 1] - lm.eye_l[1], P[:, 2] - lm.eye_l[2])
-        facing *= 0.3 + 0.7 * pb.smoothstep(0.012, 0.03, d_eye)
+        # 3D distance to the eyeball centre (a (y, z)-only distance was a cylinder along x that also
+        # suppressed the cheekbone and temple at the eye's height, leaving a hole in the coverage).
+        eye_c = np.where((P[:, 0] > 0)[:, None], lm.eye_l, lm.eye_r)
+        d_eye = np.linalg.norm(P - eye_c, axis=1)
+        facing *= 0.3 + 0.7 * pb.smoothstep(0.022, 0.038, d_eye)
         # ... and the mouth: the profile's lips (kept un-stripped, with their outline) would land
         # beside the mouth corners as a pale ringed blob.
         mouth_z = 0.5 * (lm.lips_top + lm.lips_bottom)
@@ -558,10 +607,45 @@ def project_head_view(P, N, img, lm, head_pts, body_name, view, eyes, layers=Non
     return colour, facing * visible * inside * below_chin, sampled
 
 
-def grade_image(img, contrast=1.0):
-    """Scale a drawing so its skin median matches the palette and pull saturation down.
+def rgb_to_hsv(c):
+    """(N, 3) sRGB 0..1 -> hue 0..1, saturation, value."""
+    mx, mn = c.max(axis=1), c.min(axis=1)
+    d = mx - mn
+    s = np.where(mx > 1e-6, d / np.maximum(mx, 1e-6), 0.0)
+    h = np.zeros(len(c), np.float32)
+    nz = d > 1e-6
+    r, g, b = c[:, 0], c[:, 1], c[:, 2]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        hr = ((g - b) / d) % 6
+        hg = (b - r) / d + 2
+        hb = (r - g) / d + 4
+    h = np.where(mx == r, hr, np.where(mx == g, hg, hb)) / 6.0
+    h = np.where(nz, h, 0.0) % 1.0
+    return h.astype(np.float32), s.astype(np.float32), mx.astype(np.float32)
 
-    `contrast` > 1 deepens the drawing's own shading (luminance power curve about the lit tone)."""
+
+def hsv_to_rgb(h, s, v):
+    i = np.floor(h * 6.0)
+    f = h * 6.0 - i
+    p, q, t = v * (1 - s), v * (1 - s * f), v * (1 - s * (1 - f))
+    i = i.astype(int) % 6
+    r = np.choose(i, [v, q, p, p, t, v])
+    g = np.choose(i, [t, v, v, q, p, p])
+    b = np.choose(i, [p, p, t, v, v, q])
+    return np.stack([r, g, b], 1).astype(np.float32)
+
+
+def grade_image(img, contrast=1.0):
+    """Grade a drawing so its lit skin tone becomes the palette's SKIN, keeping its own shading.
+
+    The transfer is done in HSV as ratios to the drawing's lit skin: hue is shifted by the
+    difference between the palette and the drawing, saturation and value are scaled. So a
+    highlight the drawing paints toward white stays a warm pale skin (a per-channel gain turned
+    the orange drawing's highlights grey-pink, because its weak blue channel got the largest
+    gain), and shadows keep the skin hue instead of going grey.
+
+    `contrast` > 1 deepens the drawing's own shading (luminance power curve about the lit tone).
+    Only skin-coloured pixels are re-tinted; grey cloth, ink and eyes keep their colours."""
     flat = img.reshape(-1, 3)
     lum = luminance(flat)
     sat = flat.max(axis=1) - flat.min(axis=1)
@@ -571,22 +655,27 @@ def grade_image(img, contrast=1.0):
         lit = np.median(bright, axis=0)
     else:
         lit = SKIN
-    graded = flat * (SKIN / np.maximum(lit, 1e-3))
-    g_lum = luminance(graded)[:, None]
-    graded = g_lum + (graded - g_lum) * 0.8
+    h, s, v = rgb_to_hsv(flat)
+    hl, sl, vl = (float(x[0]) for x in rgb_to_hsv(lit[None].astype(np.float32)))
+    hs, ss, vs = (float(x[0]) for x in rgb_to_hsv(SKIN[None].astype(np.float32)))
+    graded = hsv_to_rgb((h + (hs - hl)) % 1.0, np.clip(s * (ss / max(sl, 1e-3)), 0, 1), np.clip(v * (vs / max(vl, 1e-3)), 0, 1))
     if contrast != 1.0:
         lit_lum = float(luminance(SKIN[None])[0])
         g_lum = luminance(graded)[:, None]
         graded = graded * (np.power(np.maximum(g_lum, 1e-4) / lit_lum, contrast - 1.0))
-    # Only skin-coloured pixels are re-tinted; grey cloth, ink and eyes keep their colours.
     skinness = pb.smoothstep(0.06, 0.16, sat) * pb.smoothstep(0.0, 0.08, flat[:, 0] - flat[:, 2])
     out = flat * (1 - skinness[:, None]) + graded * skinness[:, None]
-    return np.clip(out, 0, 1).reshape(img.shape)
+    return np.clip(out, 0, 1).reshape(img.shape).astype(np.float32)
 
 
-def shadow_bands(colour, shadow):
+def shadow_bands(colour, shadow, no_core=None):
+    """The painted half-tone (x0.72) and core (x0.55) bands from the long-range occlusion.
+    `no_core` (0..1 per texel) keeps the core band out of a region (under the chin, which should
+    read as one soft band of at most x0.72, not a cut)."""
     half = pb.smoothstep(0.14, 0.22, shadow)[:, None]
     core = pb.smoothstep(0.32, 0.40, shadow)[:, None]
+    if no_core is not None:
+        core = core * (1.0 - no_core)[:, None]
     mul = (1.0 + (HALF_MUL - 1.0) * half) * (1.0 + (CORE_MUL / HALF_MUL - 1.0) * core)
     return np.clip(colour * mul, 0.0, 1.0)
 
@@ -627,7 +716,7 @@ FACE_REGIONS = {
 }
 
 STRIP_REGIONS = {name: [poly for polys in regions.values() for poly in polys] for name, regions in FACE_REGIONS.items()}
-STRIP_REGIONS["Male_Back"] = [[(230, 0), (370, 0), (370, 115), (230, 115)]]        # back of the hair
+STRIP_REGIONS["Male_Back"] = [[(225, 0), (375, 0), (375, 150), (225, 150)]]        # back of the hair, down the nape
 STRIP_REGIONS["Male_Front"] = [[(440, 0), (590, 0), (590, 152), (440, 152)]]       # whole head (hair, beard)
 # Drawings whose dark masses are found automatically on top of the regions (the face close-ups);
 # on the full-body drawings that would also catch armpit shadows and nipples.
@@ -751,6 +840,8 @@ def layer_masks(img, name):
     for layer in ("beard", "brows"):
         region = blur_f(polygon_mask(body.shape, FACE_REGIONS[name][layer]).astype(np.float32), 3.0)
         out[layer] = np.clip(region * strokes * (1 - keep_soft), 0, 1).astype(np.float32)
+        if layer == "beard":  # the stripped zone itself (no stroke texture), see even_tone() in main
+            out["beard_region"] = np.clip(region * (1 - keep_soft), 0, 1).astype(np.float32)
     return out
 
 
@@ -806,6 +897,62 @@ def match_tone(colour, w, ref_colour, ref_w, z=None):
     return np.clip(colour * g, 0, 1)
 
 
+def fill_from_nearest(P, fill, src, colour, cell=0.002, steps=80):
+    """Colour for the `fill` texels: that of the nearest `src` texel in 3D (voxel-grid dilation,
+    `cell` metres per voxel, up to `steps` voxels away; further texels keep NaN -> caller's own)."""
+    pts = P[fill | src]
+    lo = pts.min(axis=0) - 2 * cell
+    dims = np.ceil((pts.max(axis=0) + 2 * cell - lo) / cell).astype(int) + 1
+    n = int(np.prod(dims))
+    src_i = np.ravel_multi_index(((P[src] - lo) / cell).astype(int).T, dims)
+    acc = np.zeros((n, 3), np.float64)
+    cnt = np.zeros(n, np.float64)
+    np.add.at(acc, src_i, colour[src])
+    np.add.at(cnt, src_i, 1)
+    have = (cnt > 0).reshape(dims)
+    grid = (acc / np.maximum(cnt, 1)[:, None]).reshape(*dims, 3).astype(np.float32)
+    fill_i = ((P[fill] - lo) / cell).astype(int)
+    for _ in range(steps):
+        if have[fill_i[:, 0], fill_i[:, 1], fill_i[:, 2]].all():
+            break
+        new_have, new_grid = have.copy(), grid.copy()
+        for axis in range(3):
+            for sh in (1, -1):
+                sh_have = np.roll(have, sh, axis=axis)
+                take = sh_have & ~new_have
+                new_grid[take] = np.roll(grid, sh, axis=axis)[take]
+                new_have |= take
+        for axis in range(3):  # the border never fills, so np.roll's wrap-around carries nothing
+            np.moveaxis(new_have, axis, 0)[[0, -1]] = False
+        have, grid = new_have, new_grid
+    out = grid[fill_i[:, 0], fill_i[:, 1], fill_i[:, 2]]
+    missing = ~have[fill_i[:, 0], fill_i[:, 1], fill_i[:, 2]]
+    out[missing] = colour[fill][missing]
+    return out
+
+
+def local_mean(P, sel, values, cell=0.01):
+    """Mean of `values` over the 3x3x3 voxel neighbourhood (cell metres) of each `sel` texel."""
+    pts = P[sel]
+    lo = pts.min(axis=0) - 2 * cell
+    dims = np.ceil((pts.max(axis=0) + 2 * cell - lo) / cell).astype(int) + 1
+    idx = ((pts - lo) / cell).astype(int)
+    flat = np.ravel_multi_index(idx.T, dims)
+    acc = np.zeros(int(np.prod(dims)), np.float64)
+    cnt = np.zeros(int(np.prod(dims)), np.float64)
+    np.add.at(acc, flat, values[sel])
+    np.add.at(cnt, flat, 1)
+    acc, cnt = acc.reshape(dims), cnt.reshape(dims)
+    acc_s, cnt_s = np.zeros_like(acc), np.zeros_like(cnt)
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                acc_s += np.roll(acc, (dx, dy, dz), axis=(0, 1, 2))
+                cnt_s += np.roll(cnt, (dx, dy, dz), axis=(0, 1, 2))
+    mean = acc_s / np.maximum(cnt_s, 1)
+    return mean[idx[:, 0], idx[:, 1], idx[:, 2]].astype(np.float32)
+
+
 def bake_maps(mesh_obj, res):
     """Baked per-texel data of the skin: positions, normals, head weight, long-range AO, plus the
     eyeball positions (for the lid openings)."""
@@ -841,10 +988,10 @@ def main():
                          if sum(g.weight for g in v.groups if g.group in head_idx) > 0.5], np.float32)
 
     front = load_ref(f"{body_name}_Front", plain_head=True)
-    back = load_ref(f"{body_name}_Back")
+    back = load_ref(f"{body_name}_Back", plain_head=True)  # plain head too: the nape hair is below the head bone
     face_front = load_ref(f"{body_name}_FaceFront", plain_head=True, contrast=1.15, ink=FACE_INK)
     face_side = load_ref(f"{body_name}_FaceSide", plain_head=True, contrast=1.15, ink=FACE_INK)
-    back_head = load_ref(f"{body_name}_Back", plain_head=True)
+    back_head = back
     layers_front = load_layers(f"{body_name}_FaceFront")
     layers_side = load_layers(f"{body_name}_FaceSide")
 
@@ -885,6 +1032,19 @@ def main():
         wsum = sum(w for _, w in views)
         head_col = sum(c * w[:, None] for c, w in views) / np.maximum(wsum, 1e-6)[:, None]
         head_cov = np.clip(wsum, 0, 1)
+        # Where no face drawing looks (top of the head, the temples between the front and the
+        # profile, behind the ears) the composite would fall back to the full-body drawing's
+        # stripped head, which is filled from its shadowed neck: a dark smear. Fill those texels
+        # from the nearest well-covered head texel in 3D instead, so the skin simply continues.
+        # (The texels facing down under the jaw continue the neck from the body drawing instead,
+        # with a soft changeover so there is no edge along the jaw line.)
+        head_region = head_w > 0.3
+        gaps = head_region & (head_cov < 0.95)
+        near = fill_from_nearest(P, gaps, head_region & (head_cov >= 0.95), head_col)
+        up = pb.smoothstep(-0.55, -0.15, N[gaps, 2])[:, None]
+        filler = near * up + body[gaps] * (1 - up)
+        head_col[gaps] = head_col[gaps] * head_cov[gaps, None] + filler * (1 - head_cov[gaps, None])
+        head_cov[gaps] = 1.0
         # One painting: the face drawings' skin tone follows the body drawing's chest tone.
         front_skin = (-N[:, 1] > 0.6)
         face_px = front_skin & (head_w > 0.9) & (head_cov > 0.9) & (P[:, 2] > lm.chin[2])
@@ -892,6 +1052,26 @@ def main():
                          body, front_skin & (head_w < 0.05) & (w_f > 0.8) & (P[:, 2] > 1.25) & (P[:, 2] < 1.45))
         print("  head -> body tone gain", np.round(gain, 3))
         head_col = np.clip(head_col * gain, 0, 1)
+        lsum = sum(w for _, w in layer_views)
+        for key in layer_views[0][0]:
+            value = sum(lv[key] * w for lv, w in layer_views) / np.maximum(lsum, 1e-6)
+            layers[key] = np.clip(value * np.clip(lsum, 0, 1) * head_w, 0, 1)
+        # The stripped beard zone is skin fill from two drawings (and the gap fill), each with its
+        # own level: even its low-frequency tone to the cheeks (1 cm local mean -> the lit cheek
+        # median), keeping the grain and any ink. The real shading comes back from shadow_bands().
+        zone = layers.pop("beard_region", None)
+        if zone is not None:
+            lum_h = luminance(head_col)
+            cheek_px = face_px & (np.abs(P[:, 0]) > 0.03) & (np.abs(P[:, 0]) < 0.06) \
+                & (P[:, 2] > lm.mouth[2]) & (P[:, 2] < lm.eye_l[2] - 0.015) & (lum_h > 0.4)
+            ref = float(np.median(lum_h[cheek_px])) if cheek_px.sum() > 200 else float(luminance(SKIN[None])[0])
+            on = head_region & (zone > 0.02)
+            mean = np.ones_like(lum_h)
+            mean[on] = local_mean(P, on, np.where(lum_h > 0.35, lum_h, ref))  # ink does not drag the mean
+            even = np.clip(ref / np.maximum(mean, 1e-3), 0.8, 1.3)
+            print("  beard zone tone: ref %.3f, zone mean %.3f -> gain p10/p90 %.2f/%.2f" % (
+                ref, float(mean[on].mean()), *np.percentile(even[on], [10, 90])))
+            head_col = np.clip(head_col * (1 + (even - 1) * zone)[:, None], 0, 1)
         # The body drawing's neck is a shadow tone, darker than the face drawings' jaw: grade the
         # neck to the jaw tone where the two meet, fading back to the body's own tone by the chest.
         # (No visibility test: from the front the upper neck hides behind the chin, its colour comes
@@ -909,12 +1089,10 @@ def main():
         head_col = head_col * head_cov[:, None] + body * (1 - head_cov)[:, None]
         drawn = head_col * head_w[:, None] + body * (1 - head_w)[:, None]
         coverage = np.maximum(total, head_cov * head_w)
-        lsum = sum(w for _, w in layer_views)
-        for key in layer_views[0][0]:
-            value = sum(lv[key] * w for lv, w in layer_views) / np.maximum(lsum, 1e-6)
-            layers[key] = np.clip(value * np.clip(lsum, 0, 1) * head_w, 0, 1)
 
-    out = shadow_bands(drawn, shadow)
+    under_chin = pb.smoothstep(lm.chin[2] - 0.065, lm.chin[2] - 0.05, P[:, 2]) * pb.smoothstep(lm.chin[2] + 0.01, lm.chin[2], P[:, 2]) \
+        * pb.smoothstep(0.09, 0.07, np.abs(P[:, 0])) * pb.smoothstep(lm.chin[1] + 0.10, lm.chin[1] + 0.08, P[:, 1])
+    out = shadow_bands(drawn, shadow, no_core=under_chin)
     # Mouth cavity (inner lips, throat): no drawing sees it, so it would stay the fill colour;
     # paint it the dark inside like the procedural paint does, and keep it out of the skin mask.
     cavity = mouth_cavity(P, N, 1.0 - shadow, lm, head_w)
@@ -944,6 +1122,10 @@ def main():
 
 
 FACE_INK = 0.6    # how much the face drawings' ink is strengthened before projection (strengthen_ink)
+OUTLINE_RING = 6   # px inside the body drawings' silhouette that count as outline ink (strip_outline)
+EDGE_BAND = 10     # px inside the body drawings' silhouette that are blurred plain (body_source)
+EDGE_BLUR = 5      # sigma of that blur
+OUTLINE_REACH = 40  # px the outline removal follows connected dark pixels inwards (shoulder-top black masses)
 NECK_FADE = 0.16  # m below the chin where the neck grading has faded back to the body drawing's tone
 
 
