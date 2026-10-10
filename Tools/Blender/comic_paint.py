@@ -39,6 +39,7 @@ UNDER_EYE_MUL = np.array([0.86, 0.83, 0.86], np.float32)   # x0.85, hue toward p
 WARMTH = hex_col("#C97C64")
 SCLERA = hex_col("#D9D2C6")
 EYE_HIGHLIGHT = hex_col("#F2EEE8")
+THROAT = hex_col("#3A1A18")      # mouth cavity (inside of the lips), matches paint_mouth.DARK
 
 # Band multipliers: core = x0.55 luminance with hue -10 deg and saturation x1.3 (never grey).
 CORE_MUL = np.array([0.78, 0.52, 0.42], np.float32)
@@ -571,7 +572,17 @@ def paint_body(body_name, maps, lm, style):
     if male:
         beard = np.clip(np.maximum(beard_mass * 0.88, beard_strokes), 0.0, 1.0)
 
-    skin_mask = np.clip((1.0 - hair) * (1.0 - under_m) * (1.0 - ink), 0.0, 1.0)
+    # --- Mouth cavity: the skin faces behind the lip line (inside of the lips, roof and floor of
+    # the mouth) are the dark inside, not skin, with a 2-3 mm soft edge at the inner lip; they
+    # are left out of the skin tint mask. The face looks down -Y, so "behind" is larger y.
+    cavity_top = min(lm.lips_top + 0.015, lm.nose_tip[2] - 0.012)
+    cavity = smoothstep(0.0, 0.003, P[:, 1] - (lm.mouth[1] + 0.004)) \
+        * smoothstep(0.04, 0.034, np.abs(P[:, 0])) \
+        * smoothstep(lm.lips_bottom - 0.02, lm.lips_bottom - 0.016, P[:, 2]) * smoothstep(cavity_top, cavity_top - 0.004, P[:, 2]) \
+        * smoothstep(-0.3, 0.0, N[:, 1]) * smoothstep(0.3, 0.6, head_f)
+    colour = blend(colour, THROAT, cavity)
+
+    skin_mask = np.clip((1.0 - hair) * (1.0 - under_m) * (1.0 - ink) * (1.0 - cavity), 0.0, 1.0)
     return np.clip(colour, 0.0, 1.0), skin_mask, hair, under_m, beard
 
 

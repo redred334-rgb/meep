@@ -14,7 +14,7 @@ scalp hair, lips, nails, painted underwear and the eyes.
 Output in Art/Characters/Base/Textures/ (per body; "BL" = Borderlands, "TT" = Telltale):
     T_Body_<Body>_BaseColor_BL.png / _TT.png   painted colour with the default skin tone
     T_Body_<Body>_Masks.png                    R = skin (tint), G = hair (tint), B = underwear (tint)
-    T_Body_Male_Beard.png                      optional facial hair layer (white = beard)
+                                               (project_reference.py rewrites it to match the drawn texture)
     T_Eyes_BaseColor.png, T_Eyes_Masks.png     eyes; Masks R = iris (tint)
 
 Default colours (Unreal divides by these when tinting, see Tools/Unreal/setup_comic_look.py):
@@ -71,7 +71,9 @@ def make_copy(source, keep_eyes):
     bpy.context.scene.collection.objects.link(obj)
     bm = bmesh.new()
     bm.from_mesh(obj.data)
-    remove = [f for f in bm.faces if (f.material_index == 1) != keep_eyes]
+    # Skin = M_Skin only: the teeth and tongue (M_Mouth) have their own material and must not be
+    # painted as skin; their UV island would otherwise show up as a smear of body colour.
+    remove = [f for f in bm.faces if (f.material_index == 1) != keep_eyes or (not keep_eyes and f.material_index > 1)]
     bmesh.ops.delete(bm, geom=remove, context='FACES')
     bm.to_mesh(obj.data)
     bm.free()
@@ -300,7 +302,8 @@ def bake_maps(obj, res, with_masks):
         maps["point"] = bake(obj, res, geom_socket("Pointiness"))
         maps["m1"] = bake(obj, res, attributes_socket(["mask_lips", None, "mask_ears"]))
         maps["nails"] = bake(obj, res, sum_groups_socket(["mask_fingernails", "mask_toenails"]))
-        maps["m2"] = bake(obj, res, attributes_socket(["mask_scalp", "mask_nipple", "head"]))
+        maps["m2"] = bake(obj, res, attributes_socket(["mask_scalp", "mask_nipple", None]))
+        maps["head"] = bake(obj, res, sum_groups_socket(["head", "jaw"]))  # chin/lower lip are on the jaw bone
     valid = maps["pos"][:, :, 3].reshape(-1) > 0.5
     flat = {}
     for key, img in maps.items():
@@ -310,6 +313,7 @@ def bake_maps(obj, res, with_masks):
             flat[key] = flat[key][:, 0]
         flat["axis"] = flat["axis"] * 2.0 - 1.0
         flat["m1"][:, 1] = flat.pop("nails")[:, 0]
+        flat["m2"][:, 2] = flat.pop("head")[:, 0]
     return flat, valid
 
 
@@ -333,9 +337,8 @@ def paint(body_name):
             masks = np.stack([skin_m, hair_m, under_m], axis=1)
             save_png(to_image(masks, valid, BODY_RES, 3),
                      os.path.join(TEX_DIR, f"T_Body_{body_name}_Masks.png"), size=MASK_RES)
-        if beard is not None and style == "BL":
-            save_png(to_image(beard, valid, BODY_RES, 1),
-                     os.path.join(TEX_DIR, f"T_Body_{body_name}_Beard.png"), size=MASK_RES)
+        # The beard layer (T_Body_Male_Beard.png) is no longer the procedural one: project_reference.py
+        # cuts it, and the brows, out of the face drawings.
     del maps
 
     if body_name == "Male":  # Both bodies share the same eye layout, so one eye texture is enough.

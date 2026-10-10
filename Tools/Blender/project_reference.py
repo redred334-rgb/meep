@@ -21,6 +21,8 @@ Run after paint_base_body.py:
 
 Outputs (Art/Characters/Base/Textures/):
     T_Body_<Body>_BaseColor_Drawn.png   base texture with the drawing projected onto the body
+    T_Body_<Body>_Masks.png             R skin / G hair / B underwear tint masks matching the drawn texture
+    T_Body_<Body>_Beard.png, _Brows.png swappable layers cut from the face drawings (white = hair)
     T_Body_<Body>_DrawnCoverage.png     white where the drawing was used (debug)
 """
 
@@ -302,9 +304,12 @@ FACE_LANDMARKS = {
         # front view: name -> (px, py); model side: (x, z) taken from Landmarks
         "front": {"nose_tip": (228, 397), "mouth": (228, 478),
                   "lips_top": (228, 468), "lips_bottom": (228, 500),
-                  "corner_l": (285, 482), "corner_r": (172, 482), "chin_bottom": (228, 695),
+                  # chin_bottom = where the chin meets the neck (the beard's lower edge), NOT lower
+                  # down: at y=695 the drawing is already the shadowed neck, which then got
+                  # stretched over the chin and darkened it. neck_* sit 5 cm below the chin.
+                  "corner_l": (285, 482), "corner_r": (172, 482), "chin_bottom": (228, 626),
                   "ear_l": (430, 355), "ear_r": (28, 355), "hairline": (228, 195), "head_top": (228, 60),
-                  "temple_l": (375, 235), "temple_r": (80, 235), "neck_l": (330, 640), "neck_r": (125, 640),
+                  "temple_l": (375, 235), "temple_r": (80, 235), "neck_l": (335, 692), "neck_r": (121, 692),
                   "brow_l": (305, 262), "brow_r": (150, 262)},
         # side view (profile facing left = the character's left side): name -> (px, py); model (y, z)
         "side": {"nose_tip": (12, 345), "chin": (55, 475), "chin_bottom": (118, 540),
@@ -486,8 +491,9 @@ def thicken_lid_ink(img, band, grow=2):
     return out
 
 
-def project_head_view(P, N, img, lm, head_pts, body_name, view, eyes):
-    """Project a face drawing onto the head using landmark correspondences. Returns (colour, weight).
+def project_head_view(P, N, img, lm, head_pts, body_name, view, eyes, layers=None):
+    """Project a face drawing onto the head using landmark correspondences.
+    Returns (colour, weight, {layer: value}) with `layers` (drawing-space masks) sampled the same way.
 
     `eyes` is (in_hole, pins) from eye_openings(): the model-side eye pins are matched with the
     drawing's eye-opening outline, and any lid texel (outside the mesh opening) that would still
@@ -526,6 +532,11 @@ def project_head_view(P, N, img, lm, head_pts, body_name, view, eyes):
         # The front view owns the eyes: the profile's outer-corner lash wedge would smudge the temple.
         d_eye = np.hypot(P[:, 1] - lm.eye_l[1], P[:, 2] - lm.eye_l[2])
         facing *= 0.3 + 0.7 * pb.smoothstep(0.012, 0.03, d_eye)
+        # ... and the mouth: the profile's lips (kept un-stripped, with their outline) would land
+        # beside the mouth corners as a pale ringed blob.
+        mouth_z = 0.5 * (lm.lips_top + lm.lips_bottom)
+        d_corner = np.hypot(np.abs(P[:, 0]) - lm.mouth_half_width, P[:, 2] - mouth_z)
+        facing *= pb.smoothstep(0.02, 0.045, d_corner)
     uv = tps_eval(coef, src * scale, q * scale)
     colour = sample(ref_src, uv[:, 0], uv[:, 1])
     spill = sample1(eye_open_soft, uv[:, 0], uv[:, 1]) * (~in_hole)
@@ -541,7 +552,8 @@ def project_head_view(P, N, img, lm, head_pts, body_name, view, eyes):
     inside = sample1(soft_mask, uv[:, 0], uv[:, 1])
     # The face drawings stop at the jaw: below the chin the neck comes from the body drawings.
     below_chin = pb.smoothstep(lm.chin[2] - 0.048, lm.chin[2] - 0.024, P[:, 2])
-    return colour, facing * visible * inside * below_chin
+    sampled = {k: sample1(v, uv[:, 0], uv[:, 1]) * inside for k, v in (layers or {}).items()}
+    return colour, facing * visible * inside * below_chin, sampled
 
 
 def grade_image(img, contrast=1.0):
@@ -580,49 +592,65 @@ def shadow_bands(colour, shadow):
 # Regions (pixel polygons) of hair, beard and brows in each face drawing. Anything inside is
 # replaced with the drawing's clean skin tone so the base head stays plain; hair is a mesh,
 # beard/brows are layers. In the full-body drawings only the head is stripped (the neck is used).
-# Regions inside the strip areas that must be kept: the lips sit inside the beard area. These are
-# the lip outlines themselves (not the moustache or the skin around them), with a feathered edge.
+# Regions inside or next to the strip areas that must be kept: the lips sit inside the beard area
+# (the lip outlines themselves, not the moustache or the skin around them) and the nostril ink sits
+# right above the moustache. Feathered edge.
 KEEP_REGIONS = {
     "Male_FaceFront": [[(172, 482), (185, 474), (205, 468), (220, 470), (228, 472), (236, 470), (251, 468),
-                        (271, 474), (285, 482), (271, 492), (251, 499), (228, 501), (205, 499), (185, 492)]],
-    "Male_FaceSide": [[(66, 401), (47, 401), (40, 407), (38, 414), (44, 418), (40, 426), (45, 436), (62, 441), (74, 437), (70, 418)]],
+                        (271, 474), (285, 482), (271, 492), (251, 499), (228, 501), (205, 499), (185, 492)],
+                       [(180, 392), (276, 392), (276, 424), (180, 424)]],                        # nostrils
+    "Male_FaceSide": [[(66, 401), (47, 401), (40, 407), (38, 414), (44, 418), (40, 426), (45, 436), (62, 441), (74, 437), (70, 418)],
+                      [(0, 328), (72, 328), (72, 366), (0, 366)]],                              # nostril
 }
 
-STRIP_REGIONS = {
-    "Male_FaceFront": [
-        [(0, 0), (445, 0), (445, 330), (400, 262), (350, 215), (300, 200), (228, 192), (160, 200),
-         (100, 215), (45, 262), (0, 330)],                                            # hair
-        [(28, 400), (95, 452), (165, 442), (228, 438), (292, 442), (360, 452), (425, 400), (420, 470),
-         (395, 575), (340, 690), (228, 712), (118, 690), (60, 575), (30, 470)],      # beard + moustache
-        [(84, 232), (218, 244), (218, 292), (84, 292)], [(240, 244), (376, 232), (376, 292), (240, 292)],  # brows
-    ],
-    "Male_FaceSide": [
-        [(0, 0), (466, 0), (466, 330), (445, 420), (400, 470), (300, 400), (250, 380), (235, 320),
-         (200, 300), (170, 255), (152, 210), (135, 185), (100, 165), (55, 180), (0, 230)],  # hair + sideburn
-        [(10, 368), (60, 372), (120, 345), (200, 330), (255, 360), (290, 400), (305, 450), (260, 530),
-         (180, 560), (120, 548), (60, 500), (25, 450), (10, 420)],                   # beard + moustache
-        [(40, 214), (140, 226), (140, 256), (40, 250)],                             # brow
-    ],
-    "Male_Back": [[(230, 0), (370, 0), (370, 115), (230, 115)]],                    # back of the hair
-    "Male_Front": [[(440, 0), (590, 0), (590, 152), (440, 152)]],                   # whole head (hair, beard)
+# The face drawings' regions are named, because the beard and brows are also cut out of the
+# drawings as swappable layers (T_Body_<Body>_Beard.png / _Brows.png, see layer_masks()).
+FACE_REGIONS = {
+    "Male_FaceFront": {
+        "hair": [[(0, 0), (445, 0), (445, 330), (400, 262), (350, 215), (300, 200), (228, 192), (160, 200),
+                  (100, 215), (45, 262), (0, 330)]],
+        # The dense beard mass (moustache, cheeks, chin); the neck hatching below it is skin shading.
+        "beard": [[(62, 385), (100, 398), (150, 422), (185, 432), (228, 428), (271, 432), (306, 422), (356, 398),
+                   (394, 385), (395, 470), (385, 560), (356, 600), (300, 620), (228, 630), (156, 620), (100, 600),
+                   (71, 560), (60, 470)]],
+        "brows": [[(84, 232), (218, 244), (218, 292), (84, 292)], [(240, 244), (376, 232), (376, 292), (240, 292)]],
+    },
+    "Male_FaceSide": {
+        "hair": [[(0, 0), (466, 0), (466, 330), (445, 420), (400, 470), (300, 400), (250, 380), (235, 320),
+                  (200, 300), (170, 255), (152, 210), (135, 185), (100, 165), (55, 180), (0, 230)]],  # + sideburn
+        "beard": [[(10, 368), (60, 372), (100, 368), (150, 350), (200, 330), (240, 320), (262, 340), (265, 380),
+                   (255, 450), (235, 485), (195, 510), (150, 530), (90, 535), (45, 520), (25, 495), (10, 440)]],
+        "brows": [[(40, 214), (140, 226), (140, 256), (40, 250)]],
+    },
 }
+
+STRIP_REGIONS = {name: [poly for polys in regions.values() for poly in polys] for name, regions in FACE_REGIONS.items()}
+STRIP_REGIONS["Male_Back"] = [[(230, 0), (370, 0), (370, 115), (230, 115)]]        # back of the hair
+STRIP_REGIONS["Male_Front"] = [[(440, 0), (590, 0), (590, 152), (440, 152)]]       # whole head (hair, beard)
 # Drawings whose dark masses are found automatically on top of the regions (the face close-ups);
 # on the full-body drawings that would also catch armpit shadows and nipples.
 AUTO_STRIP = {"Male_FaceFront", "Male_FaceSide", "Male_Back"}
 
 
-def skin_fill(img, body, mass):
+def skin_fill(img, body, mass, face=False):
     """An image of this drawing's clean skin tone with a hint of grain, to paint over `mass`.
 
     Every pixel takes the colour of the nearest clean skin pixel (lit, saturated, at least 10 px
-    from any stripped area and 4 px from ink, so the greyish stubble next to the beard and the
-    shadow under the hair line are never used), smoothed over ~20 px. Filled areas therefore
+    from any stripped area and 4 px from ink, so the greyish stubble next to the beard, the
+    shadow under the hair line and the shadowed neck are never used), smoothed over ~20 px. Filled areas therefore
     continue the shading of the surrounding skin instead of showing a flat patch.
     """
     lum = img @ np.array([0.3, 0.59, 0.11], np.float32)
     sat = img.max(axis=2) - img.min(axis=2)
     clean = body & ~morph(mass, 10, True) & (lum > 0.3) & (sat > 0.12) & (img[:, :, 0] > img[:, :, 2])
     clean &= morph(lum > 0.3, 4, False)  # not next to ink lines
+    if face and mass.any():
+        # Face close-ups: nothing below the beard's lower edge (the neck) is a source, or the chin,
+        # whose nearest clean skin is the neck 20 px below rather than the cheeks 150 px away, takes
+        # the neck's shadow tone. The full-body drawings do fill their head from the neck.
+        clean[np.nonzero(mass.any(axis=1))[0].max():] = False
+    if clean.sum() > 100:
+        clean &= lum >= np.percentile(lum[clean], 35)  # lit skin only, not the shaded parts
     if clean.sum() < 100:
         base = np.broadcast_to(SKIN, img.shape).astype(np.float32)
     else:
@@ -651,7 +679,16 @@ def strip_hair(img, name=None):
     if name in STRIP_REGIONS:
         mass |= polygon_mask(body.shape, STRIP_REGIONS[name])
     mass = morph(mass, 6, True) & body                          # take a margin of the lighter strokes too
-    soft = blur_f(mass.astype(np.float32), 2.0) * body  # feathered edge, silhouette untouched
+    fill = skin_fill(img, body, mass, face="_Face" in (name or ""))
+    # Stray strokes around the masses (hairline wisps on the forehead, stubble next to the beard,
+    # the sideburn's tail): anything in a band around the mass that differs from the clean skin
+    # fill is a stroke, not skin, so it goes too. Thin lines inside the band are not important
+    # ink (the lid lines and lips are protected by `keep` below).
+    band = morph(mass, SCRATCH_BAND, True) & body & ~mass
+    fill_lum = fill @ np.array([0.3, 0.59, 0.11], np.float32)
+    scratch = band & (np.abs(lum - fill_lum) > SCRATCH_DEV)
+    scratch = morph(scratch, 2, True) & band
+    soft = np.maximum(blur_f(mass.astype(np.float32), 2.0), blur_f(scratch.astype(np.float32), 1.0)) * body
     keep = np.zeros(body.shape, bool)
     if name in KEEP_REGIONS:
         keep |= polygon_mask(body.shape, KEEP_REGIONS[name])
@@ -663,12 +700,59 @@ def strip_hair(img, name=None):
         keep |= morph(eye_open, 7, True)
     if keep.any():
         soft *= 1 - blur_f(keep.astype(np.float32), 1.5)
-    fill = skin_fill(img, body, mass)
     out = img * (1 - soft[:, :, None]) + fill * soft[:, :, None]
-    return out.astype(np.float32), soft
+    return np.clip(out, 0, 1).astype(np.float32), soft
 
 
-def load_ref(name, plain_head=False, contrast=1.0):
+SCRATCH_BAND = 14   # px around a stripped mass that is checked for stray strokes
+SCRATCH_DEV = 0.07  # luminance difference from the clean skin fill that counts as a stroke
+
+
+def strengthen_ink(img, body, gain=0.6):
+    """Darken and slightly widen the drawing's ink so it survives projection.
+
+    The face drawings' lines are 1-2 px (about 1 mm on the head); projected and filtered they
+    come out as faint brown scratches. The Borderlands look wants the lid wedge, nostrils, mouth
+    corners and jaw line to read as heavy ink, so dark pixels are pushed towards black and grown
+    by about a pixel. No new lines are invented: only what the drawing already has gets heavier.
+    """
+    lum = img @ np.array([0.3, 0.59, 0.11], np.float32)
+    # Only real ink (lum < ~0.3) counts: the drawing's mid-tone hatching on the nose sides and
+    # cheeks is shading and must stay a soft brown, or the nose turns into black smudges.
+    ink = pb.smoothstep(0.32, 0.14, lum) * body
+    ink = np.maximum(ink, blur_f(ink, 0.7) * 0.9)
+    return np.clip(img * (1 - gain * ink)[:, :, None], 0, 1).astype(np.float32)
+
+
+def layer_masks(img, name):
+    """Drawing-space masks (0..1) of the beard and brows: the drawing's hair strokes inside the
+    FACE_REGIONS polygons, minus the lips and the lid band (which belong to the skin).
+
+    The mask carries the drawing's own stroke texture (how dark each pixel is), so the projected
+    layer looks drawn rather than like a flat blob: solid where the beard is dense, broken strokes
+    along its edges and in the stubble.
+    """
+    if name not in FACE_REGIONS:
+        return {}
+    lum = img @ np.array([0.3, 0.59, 0.11], np.float32)
+    body = drawing_mask(img)
+    strokes = pb.smoothstep(0.50, 0.22, lum) * body
+    keep = np.zeros(body.shape, bool)
+    if name in KEEP_REGIONS:
+        keep |= polygon_mask(body.shape, KEEP_REGIONS[name])
+    body_name, _, view = name.partition("_Face")
+    if body_name in EYE_OPENINGS:
+        _, eye_open, _ = drawing_eye_pins(img.shape, body_name, view.lower())
+        keep |= morph(eye_open, 7, True)
+    keep_soft = blur_f(keep.astype(np.float32), 1.5)
+    out = {}
+    for layer in ("beard", "brows"):
+        region = blur_f(polygon_mask(body.shape, FACE_REGIONS[name][layer]).astype(np.float32), 3.0)
+        out[layer] = np.clip(region * strokes * (1 - keep_soft), 0, 1).astype(np.float32)
+    return out
+
+
+def load_ref(name, plain_head=False, contrast=1.0, ink=0.0):
     path = os.path.join(REF_DIR, name + ".png")
     if not os.path.exists(path):
         return None
@@ -676,7 +760,17 @@ def load_ref(name, plain_head=False, contrast=1.0):
     if plain_head:
         img, mass = strip_hair(img, name)
         Image.fromarray((mass * 255).astype(np.uint8)).save(os.path.join(REF_DIR, name + "_HairMask.png"))
+    if ink > 0:
+        img = strengthen_ink(img, drawing_mask(img), ink)
     return img
+
+
+def load_layers(name):
+    """Beard/brow masks of a face drawing (see layer_masks), or {} without the drawing."""
+    path = os.path.join(REF_DIR, name + ".png")
+    if not os.path.exists(path):
+        return {}
+    return layer_masks(grade_image(np.asarray(Image.open(path).convert("RGB")).astype(np.float32) / 255), name)
 
 
 def tone_gain(colour, mask, ref_colour, ref_mask):
@@ -716,7 +810,8 @@ def bake_maps(mesh_obj, res):
     skin_obj = pb.make_copy(mesh_obj, keep_eyes=False)
     pos = pb.bake(skin_obj, res, pb.geom_socket("Position"))
     nrm = pb.bake(skin_obj, res, pb.geom_socket("Normal"))
-    head = pb.bake(skin_obj, res, pb.attributes_socket(["head", None, None]))
+    # Head weight = head + jaw bones: the chin and lower lip follow the jaw bone since the rebuild.
+    head = pb.bake(skin_obj, res, pb.sum_groups_socket(["head", "jaw"]))
     ao_l = pb.bake(skin_obj, res, pb.ao_socket(0.15), samples=24)
     eye_obj = pb.make_copy(mesh_obj, keep_eyes=True)
     eye_pos = pb.bake(eye_obj, EYE_RES, pb.geom_socket("Position"))
@@ -743,9 +838,11 @@ def main():
 
     front = load_ref(f"{body_name}_Front", plain_head=True)
     back = load_ref(f"{body_name}_Back")
-    face_front = load_ref(f"{body_name}_FaceFront", plain_head=True, contrast=1.15)
-    face_side = load_ref(f"{body_name}_FaceSide", plain_head=True, contrast=1.15)
+    face_front = load_ref(f"{body_name}_FaceFront", plain_head=True, contrast=1.15, ink=FACE_INK)
+    face_side = load_ref(f"{body_name}_FaceSide", plain_head=True, contrast=1.15, ink=FACE_INK)
     back_head = load_ref(f"{body_name}_Back", plain_head=True)
+    layers_front = load_layers(f"{body_name}_FaceFront")
+    layers_side = load_layers(f"{body_name}_FaceSide")
 
     P, N, head_raw, shadow, eye_P, valid = bake_maps(mesh_obj, RES)
     head_w = pb.smoothstep(0.35, 0.65, head_raw)
@@ -765,14 +862,18 @@ def main():
     # --- Head: face drawings matched by landmarks (front + profile), back of the head from the back view.
     drawn = body
     coverage = total
+    layers = {}
     if face_front is not None and body_name in FACE_LANDMARKS:
         in_hole, eye_front, eye_side = eye_openings(P, eye_P, lm)
         for k, v in sorted({**eye_front, **eye_side}.items()):
             print(f"  eye pin {k}: ({v[0]:.4f}, {v[1]:.4f})")
-        views = [project_head_view(P, N, face_front, lm, head_pts, body_name, "front", (in_hole, eye_front))]
+        c_f, w_fr, l_f = project_head_view(P, N, face_front, lm, head_pts, body_name, "front", (in_hole, eye_front), layers_front)
+        views = [(c_f, w_fr)]
+        layer_views = [(l_f, w_fr)]
         if face_side is not None:
-            c_s, w_s = project_head_view(P, N, face_side, lm, head_pts, body_name, "side", (in_hole, eye_side))
-            views.append((match_tone(c_s, w_s, views[0][0], views[0][1], z=P[:, 2]), w_s))
+            c_s, w_s, l_s = project_head_view(P, N, face_side, lm, head_pts, body_name, "side", (in_hole, eye_side), layers_side)
+            views.append((match_tone(c_s, w_s, c_f, w_fr, z=P[:, 2]), w_s))
+            layer_views.append((l_s, w_s))
         if back_head is not None:
             colour_bh, w_bh = project_view(mesh_obj, P, N, back_head, mirror_x=True)
             w_bh = w_bh * pb.smoothstep(0.1, 0.6, N[:, 1]) ** 2
@@ -782,19 +883,59 @@ def main():
         head_cov = np.clip(wsum, 0, 1)
         # One painting: the face drawings' skin tone follows the body drawing's chest tone.
         front_skin = (-N[:, 1] > 0.6)
-        gain = tone_gain(head_col, front_skin & (head_w > 0.9) & (head_cov > 0.9) & (P[:, 2] > lm.chin[2]),
+        face_px = front_skin & (head_w > 0.9) & (head_cov > 0.9) & (P[:, 2] > lm.chin[2])
+        gain = tone_gain(head_col, face_px,
                          body, front_skin & (head_w < 0.05) & (w_f > 0.8) & (P[:, 2] > 1.25) & (P[:, 2] < 1.45))
         print("  head -> body tone gain", np.round(gain, 3))
         head_col = np.clip(head_col * gain, 0, 1)
+        # The body drawing's neck is a shadow tone, darker than the face drawings' jaw: grade the
+        # neck to the jaw tone where the two meet, fading back to the body's own tone by the chest.
+        # (No visibility test: from the front the upper neck hides behind the chin, its colour comes
+        # from the drawing's soft copy at the same height.)
+        # Lit skin only on both sides (no ink, no lips, no mouth interior): the upper neck against
+        # the lower cheeks / upper lip zone.
+        lit_body = luminance(body) > 0.42
+        lit_head = luminance(head_col) > 0.5
+        neck_px = front_skin & (head_w < 0.5) & (P[:, 2] > lm.chin[2] - 0.12) & (P[:, 2] < lm.chin[2] - 0.03) & lit_body
+        jaw_px = face_px & (P[:, 2] > lm.chin[2] + 0.04) & (P[:, 2] < lm.chin[2] + 0.11) & lit_head
+        neck_gain = tone_gain(body, neck_px, head_col, jaw_px)
+        print("  neck -> jaw tone gain", np.round(neck_gain, 3))
+        neck_t = pb.smoothstep(lm.chin[2] - NECK_FADE, lm.chin[2] - 0.05, P[:, 2]) * (1 - head_w)
+        body = np.clip(body * (1 + (neck_gain - 1) * neck_t[:, None]), 0, 1)
         head_col = head_col * head_cov[:, None] + body * (1 - head_cov)[:, None]
         drawn = head_col * head_w[:, None] + body * (1 - head_w)[:, None]
         coverage = np.maximum(total, head_cov * head_w)
+        lsum = sum(w for _, w in layer_views)
+        for key in layer_views[0][0]:
+            value = sum(lv[key] * w for lv, w in layer_views) / np.maximum(lsum, 1e-6)
+            layers[key] = np.clip(value * np.clip(lsum, 0, 1) * head_w, 0, 1)
 
     out = shadow_bands(drawn, shadow)
+    if os.environ.get("PROJ_DEBUG"):  # dump the intermediates for inspection (iteration helper)
+        np.savez(os.environ["PROJ_DEBUG"], body=body, drawn=drawn, out=out, coverage=coverage, head_w=head_w,
+                 w_f=w_f, w_b=w_b, shadow=shadow, **{f"layer_{k}": v for k, v in layers.items()},
+                 **({"head_col": head_col, "head_cov": head_cov, "w_front": views[0][1],
+                     "w_side": views[1][1] if len(views) > 1 else w_f * 0} if face_front is not None else {}))
     pb.save_png(pb.to_image(out, valid, RES, 3), os.path.join(TEX_DIR, f"T_Body_{body_name}_BaseColor_Drawn.png"))
     pb.save_png(pb.to_image(coverage, valid, RES, 1),
                 os.path.join(TEX_DIR, f"T_Body_{body_name}_DrawnCoverage.png"), size=1024)
+    # Tint masks matching the drawn texture: R skin (no ink, no underwear), G hair (none: plain
+    # head), B underwear (the drawing's grey cloth around the pelvis).
+    lum = luminance(out)
+    ink = pb.smoothstep(0.30, 0.20, lum)
+    sat = out.max(axis=1) - out.min(axis=1)
+    pelvis_z = lm.bone_head["pelvis"][2]
+    under = pb.smoothstep(0.12, 0.06, sat) * (P[:, 2] > pelvis_z - 0.30) * (P[:, 2] < pelvis_z + 0.12) * (lum > 0.12)
+    masks = np.stack([np.clip((1 - ink) * (1 - under), 0, 1), np.zeros_like(lum), under], axis=1)
+    pb.save_png(pb.to_image(masks, valid, RES, 3), os.path.join(TEX_DIR, f"T_Body_{body_name}_Masks.png"), size=pb.MASK_RES)
+    for key, value in layers.items():
+        pb.save_png(pb.to_image(value, valid, RES, 1),
+                    os.path.join(TEX_DIR, f"T_Body_{body_name}_{key.capitalize()}.png"), size=pb.MASK_RES)
     pb.hook_up_materials(body_name, blend_path, colour_file=f"T_Body_{body_name}_BaseColor_Drawn.png")
+
+
+FACE_INK = 0.6    # how much the face drawings' ink is strengthened before projection (strengthen_ink)
+NECK_FADE = 0.16  # m below the chin where the neck grading has faded back to the body drawing's tone
 
 
 if __name__ == "__main__":
