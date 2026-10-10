@@ -1284,6 +1284,60 @@ def bake_maps(mesh_obj, res):
     return P, N, head_w, shadow, eye_P, valid
 
 
+def torso_side_fill(body, P, N, w_f, w_b, torso, z0, z1, side_limit, row=0.005):
+    """Flat colour for the sides of the torso between heights z0 and z1 (CLOTH_SIDE_FILL).
+
+    Neither body drawing sees the sides squarely: their texels sample the drawings' last edge
+    pixels (rim light, outline remains, half a garment edge), which came out as pale and dark
+    vertical streaks, and the bra band and briefs were not grey all the way round. Per 5 mm row
+    of height and per half (left/right), the colour of the front drawing's and the back drawing's
+    own texels nearest the silhouette (the outermost 30 % by |x| of the squarely seen texels in
+    that row, median so ink does not count) is taken; the side texel then blends the two by its
+    normal (front colour at N.y = -0.45, back colour at +0.45), with the rows smoothed over 1.5 cm
+    so a garment edge becomes a soft step, not a staircase. Texels at |N.y| below `side_limit`
+    are replaced, fading to the projection by `side_limit`."""
+    n_rows = int(np.ceil((z1 - z0) / row)) + 1
+    band = torso & (P[:, 2] > z0) & (P[:, 2] < z1)
+    zi = np.clip(((P[:, 2] - z0) / row).astype(int), 0, n_rows - 1)  # row of each texel (for the tables)
+    out = body.copy()
+    t_side = pb.smoothstep(side_limit, side_limit - 0.15, np.abs(N[:, 1]))
+    mix = pb.smoothstep(-side_limit, side_limit, N[:, 1])
+    centres = z0 + (np.arange(n_rows) + 0.5) * row
+    replaced = 0
+    for sign in (1.0, -1.0):
+        half = band & (sign * P[:, 0] > 0)
+        rows_rgb = {}
+        for key, seen in (("f", (-N[:, 1] > 0.6) & (w_f > 0.9)), ("b", (N[:, 1] > 0.6) & (w_b > 0.9))):
+            sel = half & seen
+            table = np.full((n_rows, 3), np.nan, np.float32)
+            for r in np.unique(zi[sel]):
+                idx = np.nonzero(sel & (zi == r))[0]
+                if len(idx) < 20:
+                    continue
+                ax = np.abs(P[idx, 0])
+                edge = idx[ax >= np.percentile(ax, 70)]
+                table[r] = np.median(body[edge], axis=0)
+            have = ~np.isnan(table[:, 0])
+            if have.sum() < 2:
+                rows_rgb = None
+                break
+            for c in range(3):  # fill the rows without texels, then 3-row box smoothing
+                table[:, c] = np.interp(centres, centres[have], table[have, c])
+                table[:, c] = np.convolve(np.pad(table[:, c], 1, mode="edge"), np.ones(3) / 3, mode="valid")
+            rows_rgb[key] = table
+        if rows_rgb is None:
+            continue
+        side = half & (np.abs(N[:, 1]) < side_limit)
+        # Continuous in height (linear between the row centres), so the rows do not show as steps.
+        col_f = np.stack([np.interp(P[side, 2], centres, rows_rgb["f"][:, c]) for c in range(3)], 1)
+        col_b = np.stack([np.interp(P[side, 2], centres, rows_rgb["b"][:, c]) for c in range(3)], 1)
+        col = col_f * (1 - mix[side])[:, None] + col_b * mix[side][:, None]
+        out[side] = body[side] * (1 - t_side[side])[:, None] + col * t_side[side][:, None]
+        replaced += side.sum()
+    print("  torso side fill z %.3f..%.3f: %d side texels" % (z0, z1, replaced))
+    return np.clip(out, 0, 1).astype(np.float32)
+
+
 def garment_zones(lm, body_name):
     """Height windows (z0, z1) in which grey texels are garment: the briefs around the pelvis,
     plus the sports bra around the bust on the Female."""
@@ -1353,26 +1407,6 @@ def main():
     zones = garment_zones(lm, body_name)
     grey_b = (sat_b < 0.10) & (lum_b > 0.10) & (lum_b < 0.45)
     cloth = grey_b & in_zones(P[:, 2], zones)
-    side_limit = CLOTH_SIDE_FILL.get(body_name)
-    if side_limit:
-        on_mesh = np.abs(P).sum(axis=1) > 0  # the bake leaves off-island texels at the origin
-        for z0, z1 in zones:
-            piece = cloth & (P[:, 2] > z0) & (P[:, 2] < z1)
-            if piece.sum() < 1000:
-                continue
-            g0, g1 = np.percentile(P[piece, 2], [1, 99])  # the garment's own height range
-            in_zone = on_mesh & (P[:, 2] > g0 - 0.01) & (P[:, 2] < g1 + 0.01) & (np.abs(P[:, 0]) < 0.18)
-            side = in_zone & (np.abs(N[:, 1]) < side_limit)
-            src = in_zone & (np.abs(N[:, 1]) > 0.6) & ((w_f > 0.9) | (w_b > 0.9))
-            if side.sum() and src.sum():
-                near = fill_from_nearest(P, side, src, body)
-                t = pb.smoothstep(side_limit, side_limit - 0.15, np.abs(N[side, 1]))[:, None]
-                body[side] = body[side] * (1 - t) + near * t
-                print("  garment side fill z %.3f..%.3f: %d side texels from %d sources" % (g0, g1, side.sum(), src.sum()))
-        lum_b = luminance(body)
-        sat_b = body.max(axis=1) - body.min(axis=1)
-        grey_b = (sat_b < 0.10) & (lum_b > 0.10) & (lum_b < 0.45)
-        cloth = grey_b & in_zones(P[:, 2], zones)
     print("  3D underwear mask vs drawn garment: %.1f%% of mask texels are grey, %.1f%% of grey texels inside mask" % (
         100 * grey_b[under > 0.5].mean(), 100 * (under[cloth] > 0.5).mean()))
     for z0, z1 in zones:  # each garment evened to its own grey
@@ -1381,6 +1415,18 @@ def main():
             body = even_cloth(body, P, piece)
     if SKIN_EVEN > 0:
         body = even_skin(body, P, N, head_w, lm, SKIN_EVEN, SKIN_EVEN_CELL, chest_band)
+    side_limit = CLOTH_SIDE_FILL.get(body_name)
+    if side_limit:
+        # After the evening, so the sides copy the evened front/back tone and are not evened
+        # again (the 1 cm evening cells showed as blocks across the side's smooth gradients).
+        on_mesh = np.abs(P).sum(axis=1) > 0  # the bake leaves off-island texels at the origin
+        extents = [np.percentile(P[cloth & (P[:, 2] > z0) & (P[:, 2] < z1), 2], [1, 99])
+                   for z0, z1 in zones if (cloth & (P[:, 2] > z0) & (P[:, 2] < z1)).sum() > 1000]
+        if extents:
+            # One band from the lowest garment's hem to the highest one's top (the waist between
+            # them has the same pale rim-light / outline streaks on its sides), torso only.
+            g0, g1 = min(e[0] for e in extents) - 0.01, max(e[1] for e in extents) + 0.01
+            body = torso_side_fill(body, P, N, w_f, w_b, on_mesh & (np.abs(P[:, 0]) < 0.18), g0, g1, side_limit)
 
     # --- Head: face drawings matched by landmarks (front + profile), back of the head from the back view.
     drawn = body
