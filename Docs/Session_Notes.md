@@ -131,6 +131,28 @@ with sources), `Borderlands_Style_Guide.md` (measured ink, hatching and colour r
   about: the Brute not hearing gunshots, zombies reacting to loud landings, cover-camera aiming, and the
   folder tidy-up. Those remain on your list exactly as before.
 
+
+**Male status (10 October 2026).** The male is finished end to end. The `jaw` bone bug is fixed:
+since the chin and lower lip are weighted to `jaw`, "the head" is now the `head` + `jaw` groups
+everywhere (`paint_base_body.HEAD_GROUPS`; the chin landmark is the front of the chin ball below the
+mentolabial sulcus, the profile neck pins are measured on the mesh), and the mouth cavity is painted
+the mouth-texture dark and kept out of the skin mask (`comic_paint.mouth_cavity`, used by both the
+procedural paint and the projection). The male was rebuilt (`build_base_body.py -- Male`: 56 bones,
+85 morphs, M_Skin/M_Eyes/M_Mouth, 0 unweighted, eyes/teeth/tongue on one bone each, jaw +20 opens
+cleanly), then `paint_base_body.py`, `project_reference.py` (polished over four render-and-measure
+cycles: body outline / shoulder black masses / rim light stripped from the drawings, HSV grading,
+3D gap fill for the head composite, 3D eye exclusion for the profile, beard-zone tone evening, no
+core shadow band under the chin, nape hair stripped) and `paint_mouth.py -- Male`. Checked on
+renders: eyes clean, lips natural, teeth off-white in Rage/Laugh, no dark blotches on neck,
+trapezius or shoulders (shoulder front 1 % dark texels, neck sides 0 %), under-chin band about
+1 cm at x0.78, stripped hair/brow/beard invisible, ink readable. Textures: `T_Body_Male_*` (drawn
+master at 4096, procedural `_BL`/`_TT` fallbacks, masks and layers at 2048), `T_Mouth_*`,
+`T_Eyes_*`. Previews: `Male_FaceDrawn.png`, `Male_BodyDrawn.png`, `Male_FaceLayers.png`,
+`Male_FaceAnim.png`, `Male_Emotes.png`. Known leftovers: a faint stroke of the stripped sideburn
+at the temple in the 3/4 view, the ears come from the profile's hair-strip fill (plain, no ear
+ink), and the drawing's lower-lip centre tick reads as a chin cleft. The Female rebuild, mouth
+texture and emote sheet from earlier still stand; her drawn texture is still not run (item above).
+
 ## 4. What to do next on your PC
 
 1. **Set up.** Install Blender 4.2+ with the MPFB extension, then
