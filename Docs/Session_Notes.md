@@ -139,19 +139,37 @@ mentolabial sulcus, the profile neck pins are measured on the mesh), and the mou
 the mouth-texture dark and kept out of the skin mask (`comic_paint.mouth_cavity`, used by both the
 procedural paint and the projection). The male was rebuilt (`build_base_body.py -- Male`: 56 bones,
 85 morphs, M_Skin/M_Eyes/M_Mouth, 0 unweighted, eyes/teeth/tongue on one bone each, jaw +20 opens
-cleanly), then `paint_base_body.py`, `project_reference.py` (polished over four render-and-measure
-cycles: body outline / shoulder black masses / rim light stripped from the drawings, HSV grading,
-3D gap fill for the head composite, 3D eye exclusion for the profile, beard-zone tone evening, no
-core shadow band under the chin, nape hair stripped) and `paint_mouth.py -- Male`. Checked on
-renders: eyes clean, lips natural, teeth off-white in Rage/Laugh, no dark blotches on neck,
-trapezius or shoulders (shoulder front 1 % dark texels, neck sides 0 %), under-chin band about
-1 cm at x0.78, stripped hair/brow/beard invisible, ink readable. Textures: `T_Body_Male_*` (drawn
-master at 4096, procedural `_BL`/`_TT` fallbacks, masks and layers at 2048), `T_Mouth_*`,
-`T_Eyes_*`. Previews: `Male_FaceDrawn.png`, `Male_BodyDrawn.png`, `Male_FaceLayers.png`,
-`Male_FaceAnim.png`, `Male_Emotes.png`. Known leftovers: a faint stroke of the stripped sideburn
-at the temple in the 3/4 view, the ears come from the profile's hair-strip fill (plain, no ear
-ink), and the drawing's lower-lip centre tick reads as a chin cleft. The Female rebuild, mouth
-texture and emote sheet from earlier still stand; her drawn texture is still not run (item above).
+cleanly), then `paint_base_body.py`, `project_reference.py` and `paint_mouth.py -- Male`.
+`project_reference.py` went through two polish passes (nine render-and-measure cycles at 2048,
+then the 4096 master): body outline / shoulder black masses / rim light stripped from the drawings,
+HSV grading, 3D gap fill for the head composite, 3D eye exclusion for the profile, beard-zone tone
+evening, no core shadow band under the chin, nape hair stripped; then, from the lead review:
+*back tone* (the back's projected texels get the front's lit-skin HSV by `match_skin_tone`, the
+front/back crossover is a 35 degree normal blend with a soft self-occlusion gate instead of a hard
+visibility cut, and `even_skin` pulls the drawings' dark side shading and the back's hatched tone
+towards the chest's lit tone at 3 cm scale, strength 0.75, ink keeps its contrast), *boxers*
+(`strip_outline` no longer eats the grey garment as outline ink, the back drawing's auto hair strip
+is limited to the nape polygon instead of also painting a skin blob over the dark crotch, which was
+the swirl on the buttocks, `clean_cloth` reduces the garment to one flat grey plus its thin seam
+lines and `even_cloth` flattens it on the texels, and the silhouette armpit anchor is found from
+the hand-to-hip line so the back drawing no longer skews and the waistband is level all round),
+*face ink* (`strengthen_ink` is a levels curve: gamma 2.5 below luminance 0.35, darkest pixels on
+the warm black, plus a 1 px widening ring). Measured on the texels: back/front lit-skin luminance
+ratio 0.998 (torso 1.009, legs 0.995, arms 0.994), hue difference 0.001, side-of-torso dip 6 %
+(was 14 %), garment low-frequency std 0.004 with 94 % of the 3D briefs mask grey, shoulder front
+1.2 % dark texels, neck sides 0 %, cavity leak 0. Checked on renders: eyes clean, lips natural,
+teeth off-white in Rage/Laugh, no dark blotches on neck, trapezius or shoulders, under-chin band
+about 1 cm, stripped hair/brow/beard invisible, lid wedge / nostrils / mouth line / nasolabial read
+as ink. Textures: `T_Body_Male_*` (drawn master at 4096, procedural `_BL`/`_TT` fallbacks, masks and
+layers at 2048), `T_Mouth_*`, `T_Eyes_*`. Previews: `Male_FaceDrawn.png`, `Male_BodyDrawn.png`
+(front, 3/4, 3/4 back, back; the preview lights follow the camera so the back is lit like the
+front), `Male_FaceLayers.png`, `Male_FaceAnim.png`, `Male_Emotes.png`. Known leftovers: a faint
+stroke of the stripped sideburn at the temple in the 3/4 view, the ears come from the profile's
+hair-strip fill (plain, no ear ink), the drawing's lower-lip centre tick reads as a chin cleft, the
+trapezius top keeps about 7 % dark texels from the drawings' own ink, and the drawn boxers reach
+about 3 cm above the 3D briefs mask top (the Masks texture follows the drawing, not the mask).
+The Female rebuild, mouth texture and emote sheet from earlier still stand; her drawn texture is
+still not run (item above).
 
 ## 4. What to do next on your PC
 
