@@ -431,6 +431,34 @@ def hatching(P, axis, shadow, ao_s, ao_m, face_zone, st):
 
 
 # ---------------------------------------------------------------------------------------------
+# Mouth cavity
+
+
+def mouth_cavity(P, N, ao_l, lm, head_f):
+    """1 on the skin texels inside the mouth: the inner faces of the lips, the roof, floor and
+    back wall of the closed cavity behind them (MPFB models it so an open jaw never shows the
+    inside of the head). They are painted THROAT (= paint_mouth.DARK, so skin and mouth texture
+    meet without a seam) and left out of the skin tint mask.
+
+    "Inside" = behind the lip line (the face looks down -Y, so larger y), within the mouth's
+    width and height, on the head, and either facing backwards (the inner lips, N.y > 0) or
+    enclosed (the roof, floor and throat wall have ao_l ~ 0 because every ray hits the cavity
+    walls). The cheek skin beside the mouth corners curves back past the lip line too, but it faces
+    forward and is open to the sky, so neither test lets it in. Soft 2-3 mm edge at the inner lip.
+    The height band is kept tight (nostrils above, the under-chin skin below also sits behind the
+    lip line and faces down): the roof above the upper teeth and the floor under the tongue are
+    never seen anyway.
+    """
+    cavity_top = min(lm.lips_top + 0.015, lm.nose_tip[2] - 0.012)
+    behind = smoothstep(0.0, 0.003, P[:, 1] - (lm.mouth[1] + 0.004))
+    box = smoothstep(0.04, 0.034, np.abs(P[:, 0])) \
+        * smoothstep(lm.lips_bottom - 0.02, lm.lips_bottom - 0.016, P[:, 2]) \
+        * smoothstep(cavity_top, cavity_top - 0.004, P[:, 2])
+    inside = np.maximum(smoothstep(-0.3, 0.0, N[:, 1]), smoothstep(0.30, 0.15, ao_l))
+    return np.clip(behind * box * inside * smoothstep(0.3, 0.6, head_f), 0.0, 1.0)
+
+
+# ---------------------------------------------------------------------------------------------
 # Body
 
 
@@ -572,14 +600,8 @@ def paint_body(body_name, maps, lm, style):
     if male:
         beard = np.clip(np.maximum(beard_mass * 0.88, beard_strokes), 0.0, 1.0)
 
-    # --- Mouth cavity: the skin faces behind the lip line (inside of the lips, roof and floor of
-    # the mouth) are the dark inside, not skin, with a 2-3 mm soft edge at the inner lip; they
-    # are left out of the skin tint mask. The face looks down -Y, so "behind" is larger y.
-    cavity_top = min(lm.lips_top + 0.015, lm.nose_tip[2] - 0.012)
-    cavity = smoothstep(0.0, 0.003, P[:, 1] - (lm.mouth[1] + 0.004)) \
-        * smoothstep(0.04, 0.034, np.abs(P[:, 0])) \
-        * smoothstep(lm.lips_bottom - 0.02, lm.lips_bottom - 0.016, P[:, 2]) * smoothstep(cavity_top, cavity_top - 0.004, P[:, 2]) \
-        * smoothstep(-0.3, 0.0, N[:, 1]) * smoothstep(0.3, 0.6, head_f)
+    # --- Mouth cavity: dark inside, not skin, and left out of the skin tint mask.
+    cavity = mouth_cavity(P, N, ao_l, lm, head_f)
     colour = blend(colour, THROAT, cavity)
 
     skin_mask = np.clip((1.0 - hair) * (1.0 - under_m) * (1.0 - ink) * (1.0 - cavity), 0.0, 1.0)

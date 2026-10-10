@@ -36,7 +36,7 @@ from PIL import Image, ImageDraw, ImageFilter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import paint_base_body as pb  # noqa: E402
-from comic_paint import CORE_MUL, HALF_MUL, SKIN, luminance  # noqa: E402
+from comic_paint import CORE_MUL, HALF_MUL, SKIN, THROAT, luminance, mouth_cavity  # noqa: E402
 
 REPO_ROOT = pb.REPO_ROOT
 BASE_DIR = pb.BASE_DIR
@@ -356,7 +356,9 @@ def model_face_points(lm, head_pts, view):
             "head_back": (back[1], back[2]), "head_top": (top[1], top[2]),
             "mouth": (lm.mouth[1] + 0.004, 0.5 * (lm.lips_top + lm.lips_bottom)),
             "hairline": (lm.nose_tip[1] + 0.02, lm.eye_l[2] + 0.034),
-            "neck_front": (lm.chin[1] + 0.045, lm.chin[2] - 0.055), "neck_back": (lm.chin[1] + 0.18, lm.chin[2] - 0.055)}
+            # The drawing's neck pins sit on its silhouette, so these are the mesh's own front and
+            # back neck surface at that height (measured in Landmarks, not offsets from the chin).
+            "neck_front": (lm.neck_front, lm.chin[2] - 0.055), "neck_back": (lm.neck_back, lm.chin[2] - 0.055)}
 
 
 # --- Eye openings
@@ -811,7 +813,7 @@ def bake_maps(mesh_obj, res):
     pos = pb.bake(skin_obj, res, pb.geom_socket("Position"))
     nrm = pb.bake(skin_obj, res, pb.geom_socket("Normal"))
     # Head weight = head + jaw bones: the chin and lower lip follow the jaw bone since the rebuild.
-    head = pb.bake(skin_obj, res, pb.sum_groups_socket(["head", "jaw"]))
+    head = pb.bake(skin_obj, res, pb.sum_groups_socket(pb.HEAD_GROUPS))
     ao_l = pb.bake(skin_obj, res, pb.ao_socket(0.15), samples=24)
     eye_obj = pb.make_copy(mesh_obj, keep_eyes=True)
     eye_pos = pb.bake(eye_obj, EYE_RES, pb.geom_socket("Position"))
@@ -832,9 +834,11 @@ def main():
     mesh_obj = bpy.data.objects[f"SK_BaseBody_{body_name}"]
     armature = bpy.data.objects["Armature"]
     lm = pb.Landmarks(mesh_obj, armature)
-    head_idx = mesh_obj.vertex_groups["head"].index
+    # Head = head + jaw bones (the chin and lower lip are weighted to the jaw), like the baked
+    # head weight below; with the head group alone the face composite stopped at the mouth line.
+    head_idx = {mesh_obj.vertex_groups[g].index for g in pb.HEAD_GROUPS}
     head_pts = np.array([v.co[:] for v in mesh_obj.data.vertices
-                         if any(g.group == head_idx and g.weight > 0.5 for g in v.groups)], np.float32)
+                         if sum(g.weight for g in v.groups if g.group in head_idx) > 0.5], np.float32)
 
     front = load_ref(f"{body_name}_Front", plain_head=True)
     back = load_ref(f"{body_name}_Back")
@@ -911,9 +915,14 @@ def main():
             layers[key] = np.clip(value * np.clip(lsum, 0, 1) * head_w, 0, 1)
 
     out = shadow_bands(drawn, shadow)
+    # Mouth cavity (inner lips, throat): no drawing sees it, so it would stay the fill colour;
+    # paint it the dark inside like the procedural paint does, and keep it out of the skin mask.
+    cavity = mouth_cavity(P, N, 1.0 - shadow, lm, head_w)
+    out = out * (1 - cavity)[:, None] + THROAT * cavity[:, None]
     if os.environ.get("PROJ_DEBUG"):  # dump the intermediates for inspection (iteration helper)
         np.savez(os.environ["PROJ_DEBUG"], body=body, drawn=drawn, out=out, coverage=coverage, head_w=head_w,
-                 w_f=w_f, w_b=w_b, shadow=shadow, **{f"layer_{k}": v for k, v in layers.items()},
+                 w_f=w_f, w_b=w_b, shadow=shadow, cavity=cavity, P=P, N=N,
+                 **{f"layer_{k}": v for k, v in layers.items()},
                  **({"head_col": head_col, "head_cov": head_cov, "w_front": views[0][1],
                      "w_side": views[1][1] if len(views) > 1 else w_f * 0} if face_front is not None else {}))
     pb.save_png(pb.to_image(out, valid, RES, 3), os.path.join(TEX_DIR, f"T_Body_{body_name}_BaseColor_Drawn.png"))
@@ -926,7 +935,7 @@ def main():
     sat = out.max(axis=1) - out.min(axis=1)
     pelvis_z = lm.bone_head["pelvis"][2]
     under = pb.smoothstep(0.12, 0.06, sat) * (P[:, 2] > pelvis_z - 0.30) * (P[:, 2] < pelvis_z + 0.12) * (lum > 0.12)
-    masks = np.stack([np.clip((1 - ink) * (1 - under), 0, 1), np.zeros_like(lum), under], axis=1)
+    masks = np.stack([np.clip((1 - ink) * (1 - under) * (1 - cavity), 0, 1), np.zeros_like(lum), under], axis=1)
     pb.save_png(pb.to_image(masks, valid, RES, 3), os.path.join(TEX_DIR, f"T_Body_{body_name}_Masks.png"), size=pb.MASK_RES)
     for key, value in layers.items():
         pb.save_png(pb.to_image(value, valid, RES, 1),

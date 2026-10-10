@@ -45,6 +45,10 @@ from comic_paint import (  # noqa: E402
 BRIEFS_TOP_ABOVE_PELVIS = 0.035
 BRIEFS_LEG_LENGTH = 0.16
 
+# Vertex groups that together are "the head" for landmarks and the baked head weight: the chin and
+# the lower lip are weighted to the jaw bone, not to head.
+HEAD_GROUPS = ("head", "jaw")
+
 
 # ---------------------------------------------------------------------------------------------
 # Baking
@@ -208,9 +212,10 @@ class Landmarks:
         groups = {g.name: g.index for g in mesh_obj.vertex_groups}
 
         def group_verts(name, minimum=0.5):
-            idx = groups[name]
-            return np.array([v.co[:] for v in verts if any(g.group == idx and g.weight >= minimum for g in v.groups)],
-                            np.float32)
+            """Vertices whose summed weight in the named group(s) is at least `minimum`."""
+            idx = {groups[n] for n in ([name] if isinstance(name, str) else name)}
+            return np.array([v.co[:] for v in verts
+                             if sum(g.weight for g in v.groups if g.group in idx) >= minimum], np.float32)
 
         eye_vert_ids = {i for p in mesh_obj.data.polygons if p.material_index == 1 for i in p.vertices}
         eye_co = np.array([verts[i].co[:] for i in eye_vert_ids], np.float32)
@@ -229,13 +234,27 @@ class Landmarks:
         self.ear_y = float(ears[:, 1].mean())
         self.ear_z = float(ears[:, 2].mean())
 
-        head = group_verts("head")
+        # The head is the `head` AND `jaw` bones: since the jaw bone was added, the chin and the
+        # lower lip are weighted to it (head 0), so the head group alone stops at the mouth line
+        # and "the chin" would resolve to a throat vertex ~4 cm further back.
+        head = group_verts(HEAD_GROUPS)
         centre = head[np.abs(head[:, 0]) < 0.006]
         below_eyes = centre[(centre[:, 2] < self.eye_l[2]) & (centre[:, 2] > self.mouth[2])]
         self.nose_tip = below_eyes[np.argmin(below_eyes[:, 1])]
-        # Front-most point of the chin, well below the lower lip (which sticks out further).
-        below_mouth = centre[(centre[:, 2] < self.lips_bottom - 0.015) & (centre[:, 2] > self.mouth[2] - 0.09)]
-        self.chin = below_mouth[np.argmin(below_mouth[:, 1])]
+        # Chin: the front-most point of the chin ball, i.e. below the mentolabial sulcus (the
+        # furthest-back point of the profile just under the lower lip, which sticks out further).
+        lower_face = centre[(centre[:, 2] < self.lips_bottom) & (centre[:, 2] > self.mouth[2] - 0.09)]
+        under_lip = lower_face[lower_face[:, 2] > self.lips_bottom - 0.025]
+        sulcus_z = float(under_lip[np.argmax(under_lip[:, 1])][2])
+        chin_ball = lower_face[lower_face[:, 2] < sulcus_z]
+        self.chin = chin_ball[np.argmin(chin_ball[:, 1])]
+        # Neck silhouette 5.5 cm below the chin (profile pins for project_reference.py): the
+        # front-most and back-most centre-line vertices of the whole mesh at that height.
+        all_co = np.array([v.co[:] for v in verts], np.float32)
+        neck_z = self.chin[2] - 0.055
+        neck = all_co[(np.abs(all_co[:, 0]) < 0.006) & (np.abs(all_co[:, 2] - neck_z) < 0.006)]
+        self.neck_front = float(neck[:, 1].min())
+        self.neck_back = float(neck[:, 1].max())
 
         self.nipple = None
         if "mask_nipple" in groups:
@@ -303,7 +322,7 @@ def bake_maps(obj, res, with_masks):
         maps["m1"] = bake(obj, res, attributes_socket(["mask_lips", None, "mask_ears"]))
         maps["nails"] = bake(obj, res, sum_groups_socket(["mask_fingernails", "mask_toenails"]))
         maps["m2"] = bake(obj, res, attributes_socket(["mask_scalp", "mask_nipple", None]))
-        maps["head"] = bake(obj, res, sum_groups_socket(["head", "jaw"]))  # chin/lower lip are on the jaw bone
+        maps["head"] = bake(obj, res, sum_groups_socket(HEAD_GROUPS))  # chin/lower lip are on the jaw bone
     valid = maps["pos"][:, :, 3].reshape(-1) > 0.5
     flat = {}
     for key, img in maps.items():
