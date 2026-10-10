@@ -292,71 +292,83 @@
       318
      ],
      [
-      356,
-      300
+      352,
+      305
      ],
      [
-      350,
-      270
+      346,
+      285
      ],
      [
-      343,
+      340,
+      265
+     ],
+     [
+      332,
       245
      ],
      [
-      333,
-      222
-     ],
-     [
-      318,
-      207
-     ],
-     [
-      300,
-      196
-     ],
-     [
-      272,
-      184
-     ],
-     [
-      250,
-      180
-     ],
-     [
-      228,
-      188
-     ],
-     [
-      205,
-      194
-     ],
-     [
-      185,
-      200
-     ],
-     [
-      165,
-      210
-     ],
-     [
-      150,
+      320,
       228
      ],
      [
-      140,
-      250
+      312,
+      215
      ],
      [
-      130,
-      275
+      296,
+      205
      ],
      [
-      122,
-      300
+      275,
+      198
      ],
      [
-      112,
+      255,
+      195
+     ],
+     [
+      240,
+      200
+     ],
+     [
+      228,
+      205
+     ],
+     [
+      215,
+      208
+     ],
+     [
+      200,
+      212
+     ],
+     [
+      185,
+      220
+     ],
+     [
+      170,
+      232
+     ],
+     [
+      164,
+      248
+     ],
+     [
+      154,
+      265
+     ],
+     [
+      144,
+      285
+     ],
+     [
+      134,
+      305
+     ],
+     [
+      118,
       318
      ],
      [
@@ -571,6 +583,42 @@
       436,
       372
      ]
+    ],
+    [
+     [
+      396,
+      318
+     ],
+     [
+      457,
+      318
+     ],
+     [
+      457,
+      470
+     ],
+     [
+      396,
+      470
+     ]
+    ],
+    [
+     [
+      0,
+      318
+     ],
+     [
+      62,
+      318
+     ],
+     [
+      62,
+      470
+     ],
+     [
+      0,
+      470
+     ]
     ]
    ],
    "beard": [],
@@ -697,40 +745,44 @@
       360
      ],
      [
-      166,
-      320
+      168,
+      322
      ],
      [
       160,
-      290
+      296
      ],
      [
-      156,
-      262
+      150,
+      270
      ],
      [
-      142,
-      232
+      136,
+      246
      ],
      [
       122,
-      202
+      222
      ],
      [
-      102,
-      176
+      108,
+      196
      ],
      [
-      82,
-      160
+      94,
+      172
      ],
      [
-      60,
-      150
+      76,
+      162
      ],
      [
-      40,
-      170
+      56,
+      172
+     ],
+     [
+      36,
+      190
      ],
      [
       10,
@@ -773,51 +825,51 @@
       413
      ],
      [
-      184,
+      174,
       453
      ],
      [
-      169,
+      159,
       492
      ],
      [
-      154,
+      144,
       533
      ],
      [
-      143,
+      133,
       575
      ],
      [
-      136,
+      126,
       616
      ],
      [
-      130,
+      120,
       658
      ],
      [
-      128,
+      118,
       689
      ],
      [
-      172,
+      162,
       691
      ],
      [
-      174,
+      164,
       662
      ],
      [
-      180,
+      170,
       624
      ],
      [
-      187,
+      177,
       585
      ],
      [
-      196,
+      186,
       547
      ],
      [
@@ -865,6 +917,72 @@
      [
       262,
       411
+     ]
+    ],
+    [
+     [
+      378,
+      606
+     ],
+     [
+      510,
+      600
+     ],
+     [
+      510,
+      772
+     ],
+     [
+      378,
+      772
+     ]
+    ],
+    [
+     [
+      118,
+      690
+     ],
+     [
+      262,
+      690
+     ],
+     [
+      262,
+      772
+     ],
+     [
+      118,
+      772
+     ]
+    ],
+    [
+     [
+      298,
+      404
+     ],
+     [
+      322,
+      404
+     ],
+     [
+      342,
+      440
+     ],
+     [
+      354,
+      500
+     ],
+     [
+      350,
+      534
+     ],
+     [
+      322,
+      534
+     ],
+     [
+      300,
+      470
      ]
     ]
    ],
@@ -919,71 +1037,83 @@
      318
     ],
     [
-     356,
-     300
+     352,
+     305
     ],
     [
-     350,
-     270
+     346,
+     285
     ],
     [
-     343,
+     340,
+     265
+    ],
+    [
+     332,
      245
     ],
     [
-     333,
-     222
-    ],
-    [
-     318,
-     207
-    ],
-    [
-     300,
-     196
-    ],
-    [
-     272,
-     184
-    ],
-    [
-     250,
-     180
-    ],
-    [
-     228,
-     188
-    ],
-    [
-     205,
-     194
-    ],
-    [
-     185,
-     200
-    ],
-    [
-     165,
-     210
-    ],
-    [
-     150,
+     320,
      228
     ],
     [
-     140,
-     250
+     312,
+     215
     ],
     [
-     130,
-     275
+     296,
+     205
     ],
     [
-     122,
-     300
+     275,
+     198
     ],
     [
-     112,
+     255,
+     195
+    ],
+    [
+     240,
+     200
+    ],
+    [
+     228,
+     205
+    ],
+    [
+     215,
+     208
+    ],
+    [
+     200,
+     212
+    ],
+    [
+     185,
+     220
+    ],
+    [
+     170,
+     232
+    ],
+    [
+     164,
+     248
+    ],
+    [
+     154,
+     265
+    ],
+    [
+     144,
+     285
+    ],
+    [
+     134,
+     305
+    ],
+    [
+     118,
      318
     ],
     [
@@ -1234,6 +1364,42 @@
      240,
      316
     ]
+   ],
+   [
+    [
+     396,
+     318
+    ],
+    [
+     457,
+     318
+    ],
+    [
+     457,
+     470
+    ],
+    [
+     396,
+     470
+    ]
+   ],
+   [
+    [
+     0,
+     318
+    ],
+    [
+     62,
+     318
+    ],
+    [
+     62,
+     470
+    ],
+    [
+     0,
+     470
+    ]
    ]
   ],
   "Female_FaceSide": [
@@ -1319,40 +1485,44 @@
      360
     ],
     [
-     166,
-     320
+     168,
+     322
     ],
     [
      160,
-     290
+     296
     ],
     [
-     156,
-     262
+     150,
+     270
     ],
     [
-     142,
-     232
+     136,
+     246
     ],
     [
      122,
-     202
+     222
     ],
     [
-     102,
-     176
+     108,
+     196
     ],
     [
-     82,
-     160
+     94,
+     172
     ],
     [
-     60,
-     150
+     76,
+     162
     ],
     [
-     40,
-     170
+     56,
+     172
+    ],
+    [
+     36,
+     190
     ],
     [
      10,
@@ -1395,51 +1565,51 @@
      413
     ],
     [
-     184,
+     174,
      453
     ],
     [
-     169,
+     159,
      492
     ],
     [
-     154,
+     144,
      533
     ],
     [
-     143,
+     133,
      575
     ],
     [
-     136,
+     126,
      616
     ],
     [
-     130,
+     120,
      658
     ],
     [
-     128,
+     118,
      689
     ],
     [
-     172,
+     162,
      691
     ],
     [
-     174,
+     164,
      662
     ],
     [
-     180,
+     170,
      624
     ],
     [
-     187,
+     177,
      585
     ],
     [
-     196,
+     186,
      547
     ],
     [
@@ -1513,6 +1683,72 @@
     [
      36,
      290
+    ]
+   ],
+   [
+    [
+     378,
+     606
+    ],
+    [
+     510,
+     600
+    ],
+    [
+     510,
+     772
+    ],
+    [
+     378,
+     772
+    ]
+   ],
+   [
+    [
+     118,
+     690
+    ],
+    [
+     262,
+     690
+    ],
+    [
+     262,
+     772
+    ],
+    [
+     118,
+     772
+    ]
+   ],
+   [
+    [
+     298,
+     404
+    ],
+    [
+     322,
+     404
+    ],
+    [
+     342,
+     440
+    ],
+    [
+     354,
+     500
+    ],
+    [
+     350,
+     534
+    ],
+    [
+     322,
+     534
+    ],
+    [
+     300,
+     470
     ]
    ]
   ],
@@ -1753,6 +1989,58 @@
   "conventions": "Same as the Male tables in project_reference.py: *_l = the character's left (image right in the front view). eye_*, eye_l_in/out, eye_r_in/out and side 'eye' are reference-only iris centres / opening corners; the TPS pins the eyes from eye_openings and ignores names that model_face_points does not define.",
   "hairline_head_top": "hairline and head_top are placed where the MODEL's points land on the drawing (hairline = eye_z + 0.034 m = mid-forehead, head_top = skull top under the hair), not at the drawn hair edge, so the brow band is not squeezed 4-5x. The drawn hairline is at front (228, 196) / side (64, 166); the hair silhouette top is at front y=13 (bun) / side y=62 (hairline_drawn / head_top_drawn, reference only). If model_face_points' hairline is ever moved to the real scalp edge, use hairline_drawn.",
   "scale": "front ~2360 px/m (ear rim to ear rim 416 px = 2*(ear_x+0.011)), side ~2050 px/m (eye to chin).",
-  "strip": "hair = main mass above/behind the face + ribbons for the loose strands beside the face, the ears and the neck. The ears are left out of the polygons. beard is empty (kept so layer_masks finds the key)."
+  "strip": "hair = main mass above/behind the face + ribbons for the loose strands beside the face, the ears and the neck. The ears are left out of the polygons. beard is empty (kept so layer_masks finds the key).",
+  "blackout": "Female_Back: a stray strand of hair from the next sheet cell at the left edge (x 0-11, y 78-136) is painted black before anything else.",
+  "auto_strip_margin": "On the face drawings the automatic dark-mass strip only counts masses within this many px of the strip polygons: without it the dense hatching under the chin (FaceFront) was taken for a hair mass and filled with a skin disc. The ears in FaceFront are stripped whole (hair crosses them; the profile draws the ears), and FaceSide's black top at the bottom is stripped so no dark mass sits next to the neck.",
+  "soften": "Regions whose dark hatching is turned into a soft warm shadow (strip_hair): the dense hatch under the lower lip projected as a black smear on the chin.",
+  "hair_polygons": "The FaceFront/FaceSide hair polygons' lower edges follow the drawn hairline (forehead and temples); the first version sat 10-25 px inside the hair and its edge line survived on the forehead."
+ },
+ "blackout": {
+  "Female_Back": [
+   [
+    [
+     0,
+     70
+    ],
+    [
+     16,
+     70
+    ],
+    [
+     16,
+     140
+    ],
+    [
+     0,
+     140
+    ]
+   ]
+  ]
+ },
+ "auto_strip_margin": {
+  "Female_FaceFront": 24,
+  "Female_FaceSide": 24
+ },
+ "soften": {
+  "Female_FaceFront": [
+   [
+    [
+     183,
+     517
+    ],
+    [
+     273,
+     517
+    ],
+    [
+     273,
+     546
+    ],
+    [
+     183,
+     546
+    ]
+   ]
+  ]
  }
 }

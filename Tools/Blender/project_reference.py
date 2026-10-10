@@ -27,6 +27,7 @@ Outputs (Art/Characters/Base/Textures/):
 """
 
 import collections
+import json
 import os
 import sys
 
@@ -311,8 +312,51 @@ def strip_outline(img, mask, ring=None, reach=None):
     return pb.dilate(img, mask & ~outline, ring + reach + 2) * mask[:, :, None]
 
 
+def label_blobs(mask):
+    """4-connected components of `mask`: (label image, 1-based, 0 = background; sizes in px)."""
+    h, w = mask.shape
+    label = np.zeros(mask.shape, np.int32)
+    sizes = []
+    for y, x in zip(*np.nonzero(mask)):
+        if label[y, x]:
+            continue
+        k = len(sizes) + 1
+        label[y, x] = k
+        q = collections.deque([(y, x)])
+        count = 0
+        while q:
+            cy, cx = q.popleft()
+            count += 1
+            for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                ny, nx = cy + dy, cx + dx
+                if 0 <= ny < h and 0 <= nx < w and mask[ny, nx] and not label[ny, nx]:
+                    label[ny, nx] = k
+                    q.append((ny, nx))
+        sizes.append(count)
+    return label, sizes
+
+
+def keep_blobs(mask, n, minimum=2000):
+    """The `n` largest 4-connected blobs of `mask` (at least `minimum` px each). With n == 1 this
+    is largest_blob(): the blob under the median pixel, which is the garment on the one-garment
+    drawings (the Male's boxers); with two garments (the Female's bra and briefs) the median
+    pixel can fall between them, so the components are labelled and sized instead."""
+    if n == 1:
+        return largest_blob(mask)
+    label, sizes = label_blobs(mask)
+    order = np.argsort(sizes)[::-1][:n]
+    return np.isin(label, [int(i) + 1 for i in order if sizes[i] >= minimum])
+
+
+def garment_pieces(region):
+    """The separate garments of a cloth region (one array per blob), largest first."""
+    label, sizes = label_blobs(region)
+    return [label == int(i) + 1 for i in np.argsort(sizes)[::-1]]
+
+
 def cloth_region(img, mask):
-    """The grey garment (underwear) of a body drawing: the big neutral-grey blob, holes closed."""
+    """The grey garment(s) (underwear) of a body drawing: the big neutral-grey blob(s), holes
+    closed. N_GARMENTS says how many there are (the Female wears a sports bra and briefs)."""
     lum = img @ np.array([0.3, 0.59, 0.11], np.float32)
     sat = img.max(axis=2) - img.min(axis=2)
     grey = (sat < 0.10) & (lum > 0.12) & (lum < 0.50) & mask
@@ -326,7 +370,7 @@ def cloth_region(img, mask):
     region = morph(morph(region, 8, True), 8, False) & mask
     if region.sum() < 2000:
         return np.zeros_like(mask)
-    return largest_blob(region)                             # the one garment, no stray patches
+    return keep_blobs(region, N_GARMENTS)                   # the garment(s), no stray patches
 
 
 def clean_cloth(img, mask):
@@ -344,12 +388,24 @@ def clean_cloth(img, mask):
     inner = region & (lum > 0.12)
     base_lum = float(np.median(lum[inner]))
     base = np.median(img[inner & (np.abs(lum - base_lum) < 0.04)], axis=0).astype(np.float32)
-    ink = region & (lum < 0.62 * base_lum)
+    flat = np.broadcast_to(base, img.shape).copy()
+    ink_level = np.full(img.shape[:2], 0.62 * base_lum, np.float32)
+    if N_GARMENTS > 1:
+        # Each garment gets its own flat grey (the bra and the briefs are drawn at slightly
+        # different levels) and its own ink threshold.
+        for piece in garment_pieces(region):
+            p_inner = piece & inner
+            if p_inner.sum() < 500:
+                continue
+            p_lum = float(np.median(lum[p_inner]))
+            flat[piece] = np.median(img[p_inner & (np.abs(lum - p_lum) < 0.04)], axis=0).astype(np.float32)
+            ink_level[piece] = 0.62 * p_lum
+            print("  garment piece: %d px, base lum %.3f" % (piece.sum(), p_lum))
+    ink = region & (lum < ink_level)
     thin = ink & ~morph(morph(ink, 3, False), 3, True)      # lines up to ~6 px, not masses
     hatch = blur_f(ink.astype(np.float32), 6.0) > 0.35
     keep = thin & ~morph(hatch, 2, True)
     keep_w = np.clip(blur_f(keep.astype(np.float32), 0.7) * 1.5, 0, 1)
-    flat = np.broadcast_to(base, img.shape)
     cloth = flat * (1 - keep_w)[:, :, None] + np.minimum(img, flat) * keep_w[:, :, None]
     region_w = blur_f(region.astype(np.float32), 1.0)
     out = img * (1 - region_w)[:, :, None] + cloth * region_w[:, :, None]
@@ -790,6 +846,68 @@ STRIP_REGIONS["Male_Front"] = [[(440, 0), (590, 0), (590, 152), (440, 152)]]    
 # Drawings whose dark masses are found automatically on top of the regions (the face close-ups);
 # on the full-body drawings that would also catch armpit shadows and nipples.
 AUTO_STRIP = {"Male_FaceFront", "Male_FaceSide", "Male_Back"}
+# Pixel polygons painted black (background) before anything else: stray fragments of another
+# figure at the edge of a drawing (Female_Back.png has a strand of hair of the next sheet
+# cell at its left edge; it is not part of the silhouette and must not be auto-stripped).
+BLACKOUT = {}
+# Drawings whose auto-strip masses only count within this many px of their strip polygons
+# (the full-body drawings always use 20 px).
+AUTO_STRIP_MARGIN = {}
+# Regions of a face drawing whose dark hatching becomes a soft warm shadow instead of ink
+# (strip_hair): the Female's dense hatch under the lower lip projected as a black smear.
+SOFTEN_REGIONS = {}
+SOFTEN_MUL = 0.74  # the shadow's luminance relative to the clean skin fill (about the half-tone)
+# Bodies whose garments wrap around the torso (the Female's bra band and briefs): the texels on
+# the sides of the torso, which neither body drawing sees squarely (|N.y| below this), take the
+# colour of the nearest squarely seen texel in 3D instead of the drawings' blurred edge pixels,
+# which mixed skin and grey into pale streaks across the cloth. The Male's boxers were accepted
+# as projected, so he is not listed.
+CLOTH_SIDE_FILL = {"Female": 0.45}
+# Top of the briefs zone above the pelvis bone (the Female's briefs are cut high on the hips).
+BRIEFS_ZONE_TOP = {"Male": 0.12, "Female": 0.15}
+# Garments in the body drawings: the Male wears boxers, the Female a sports bra and briefs
+# (two grey regions for cloth_region / clean_cloth; N_GARMENTS is set from this in main()).
+GARMENTS = {"Male": 1, "Female": 2}
+N_GARMENTS = 1
+# The lit-skin reference for the body tone (even_skin, head -> body gain): a front-facing band
+# of plain skin, in metres of height. Male: the upper chest; Female: the belly between the bra
+# and the briefs (her upper chest is bra and collarbone hatching).
+CHEST_BAND = {"Male": (1.25, 1.45), "Female": (0.95, 1.07)}
+
+
+def load_body_tables(body_name):
+    """Fill the tables above for a body from Reference/<Body>_landmarks.json (the Female; the
+    Male's tables are inline). The JSON holds the measured pixel landmarks (`front`, `side`), the
+    eye openings, the face regions (hair / beard / brows, for the strip and the layers), the keep
+    and strip polygons per drawing, the auto-strip list and optional blackout polygons. Landmark
+    names the model side does not define (the iris centres, the drawn hairline) are reference
+    only and ignored by project_head_view()."""
+    path = os.path.join(REF_DIR, f"{body_name}_landmarks.json")
+    if not os.path.exists(path):
+        return
+    with open(path) as f:
+        data = json.load(f)
+
+    def polys(ps):
+        return [[tuple(pt) for pt in poly] for poly in ps]
+
+    FACE_LANDMARKS[body_name] = {view: {k: tuple(v) for k, v in data[view].items()} for view in ("front", "side")}
+    eo = data["eye_openings"]
+    EYE_OPENINGS[body_name] = {"front": [tuple(p) for p in eo["front"]], "front_mirror_x": eo["front_mirror_x"],
+                               "side": [tuple(p) for p in eo["side"]]}
+    for name, regions in data.get("face_regions", {}).items():
+        FACE_REGIONS[name] = {layer: polys(ps) for layer, ps in regions.items()}
+    for name, ps in data.get("keep", {}).items():
+        KEEP_REGIONS[name] = polys(ps)
+    for name, ps in data.get("strip", {}).items():
+        STRIP_REGIONS[name] = polys(ps)
+    AUTO_STRIP.update(data.get("auto_strip", []))
+    for name, ps in data.get("blackout", {}).items():
+        BLACKOUT[name] = polys(ps)
+    AUTO_STRIP_MARGIN.update(data.get("auto_strip_margin", {}))
+    for name, ps in data.get("soften", {}).items():
+        SOFTEN_REGIONS[name] = polys(ps)
+    print("  loaded tables for %s from %s" % (body_name, os.path.relpath(path, REPO_ROOT)))
 
 
 def skin_fill(img, body, mass, face=False):
@@ -836,11 +954,14 @@ def strip_hair(img, name=None):
         dark = (lum < 0.16) & body
         mass = morph(morph(dark, 4, False), 7, True)            # open: drop thin ink, keep masses
         mass = morph(morph(mass, 3, True), 3, False)            # close small holes
-        if "_Face" not in name and name in STRIP_REGIONS:
+        margin = AUTO_STRIP_MARGIN.get(name, None if "_Face" in name else 20)
+        if margin is not None and name in STRIP_REGIONS:
             # Full-body drawing: only the masses at the hair region count. The dark crotch of the
             # boxers in Male_Back.png was taken for a hair mass and painted over with a round
-            # skin fill, which landed on the model's buttocks as a skin-coloured swirl.
-            mass &= morph(polygon_mask(body.shape, STRIP_REGIONS[name]), 20, True)
+            # skin fill, which landed on the model's buttocks as a skin-coloured swirl. (Face
+            # drawings may ask for the same with AUTO_STRIP_MARGIN: the Female's under-chin
+            # hatching was a "mass" too.)
+            mass &= morph(polygon_mask(body.shape, STRIP_REGIONS[name]), margin, True)
     if name in STRIP_REGIONS:
         mass |= polygon_mask(body.shape, STRIP_REGIONS[name])
     mass = morph(mass, 6, True) & body                          # take a margin of the lighter strokes too
@@ -863,9 +984,21 @@ def strip_hair(img, name=None):
         # around the opening so stripping the brows cannot eat the lash line.
         _, eye_open, _ = drawing_eye_pins(img.shape, body_name, view.lower())
         keep |= morph(eye_open, 7, True)
-    if keep.any():
-        soft *= 1 - blur_f(keep.astype(np.float32), 1.5)
+    keep_w = blur_f(keep.astype(np.float32), 1.5) if keep.any() else None
+    if keep_w is not None:
+        soft *= 1 - keep_w
     out = img * (1 - soft[:, :, None]) + fill * soft[:, :, None]
+    if name in SOFTEN_REGIONS:
+        # Hatching -> soft shadow: the dark strokes take the shadow tone, then the region is
+        # blurred so the strokes merge into one warm half-tone; feathered edge, lips kept.
+        region = polygon_mask(body.shape, SOFTEN_REGIONS[name]) & body
+        sw = blur_f(region.astype(np.float32), 2.0) * body
+        if keep_w is not None:
+            sw *= 1 - keep_w
+        out_lum = out @ np.array([0.3, 0.59, 0.11], np.float32)
+        shaded = np.where((out_lum < 0.45)[:, :, None], fill * SOFTEN_MUL, out)
+        shaded = blur_f(shaded, 3.0)
+        out = out * (1 - sw[:, :, None]) + shaded * sw[:, :, None]
     return np.clip(out, 0, 1).astype(np.float32), soft
 
 
@@ -938,7 +1071,10 @@ def load_ref(name, plain_head=False, contrast=1.0, ink=0.0):
     path = os.path.join(REF_DIR, name + ".png")
     if not os.path.exists(path):
         return None
-    img = grade_image(np.asarray(Image.open(path).convert("RGB")).astype(np.float32) / 255, contrast)
+    img = np.asarray(Image.open(path).convert("RGB")).astype(np.float32) / 255
+    if name in BLACKOUT:
+        img[polygon_mask(img.shape[:2], BLACKOUT[name])] = 0.0
+    img = grade_image(img, contrast)
     if plain_head:
         img, mass = strip_hair(img, name)
         Image.fromarray((mass * 255).astype(np.uint8)).save(os.path.join(REF_DIR, name + "_HairMask.png"))
@@ -1042,7 +1178,7 @@ def even_cloth(colour, P, sel, cell=0.01):
     return out
 
 
-def even_skin(colour, P, N, head_w, lm, strength, cell=0.01):
+def even_skin(colour, P, N, head_w, lm, strength, cell=0.01, chest_band=(1.25, 1.45)):
     """Even the low-frequency tone of the body skin towards the front chest's lit tone.
 
     The drawings shade the sides of the torso and limbs darker and hatch the back densely, so
@@ -1055,7 +1191,7 @@ def even_skin(colour, P, N, head_w, lm, strength, cell=0.01):
     sat = colour.max(axis=1) - colour.min(axis=1)
     skin = (head_w < 0.1) & (P[:, 2] < lm.chin[2] - NECK_FADE) & (lum > 0.3) & (sat > 0.12) & (colour[:, 0] > colour[:, 2])
     skin &= np.abs(P).sum(axis=1) > 0  # not the off-island texels, which the bake leaves at the origin
-    chest = skin & (-N[:, 1] > 0.6) & (np.abs(P[:, 0]) < 0.15) & (P[:, 2] > 1.25) & (P[:, 2] < 1.45)
+    chest = skin & (-N[:, 1] > 0.6) & (np.abs(P[:, 0]) < 0.15) & (P[:, 2] > chest_band[0]) & (P[:, 2] < chest_band[1])
     if chest.sum() < 500 or skin.sum() < 5000:
         return colour
     ref = float(np.median(lum[chest][lum[chest] >= np.median(lum[chest])]))
@@ -1148,8 +1284,29 @@ def bake_maps(mesh_obj, res):
     return P, N, head_w, shadow, eye_P, valid
 
 
+def garment_zones(lm, body_name):
+    """Height windows (z0, z1) in which grey texels are garment: the briefs around the pelvis,
+    plus the sports bra around the bust on the Female."""
+    pelvis_z = lm.bone_head["pelvis"][2]
+    zones = [(pelvis_z - 0.30, pelvis_z + BRIEFS_ZONE_TOP.get(body_name, 0.12))]
+    if GARMENTS.get(body_name, 1) > 1 and lm.nipple is not None:
+        zones.append((lm.nipple - 0.11, lm.nipple + 0.11))
+    return zones
+
+
+def in_zones(z, zones):
+    inside = np.zeros(len(z), bool)
+    for z0, z1 in zones:
+        inside |= (z > z0) & (z < z1)
+    return inside
+
+
 def main():
+    global N_GARMENTS
     body_name = sys.argv[sys.argv.index("--") + 1] if "--" in sys.argv else "Male"
+    load_body_tables(body_name)
+    N_GARMENTS = GARMENTS.get(body_name, 1)
+    chest_band = CHEST_BAND.get(body_name, (1.25, 1.45))
     blend_path = os.path.join(BASE_DIR, f"BaseBody_{body_name}.blend")
     bpy.ops.wm.open_mainfile(filepath=blend_path)
     mesh_obj = bpy.data.objects[f"SK_BaseBody_{body_name}"]
@@ -1182,7 +1339,7 @@ def main():
     colour_fill, _ = project_view(mesh_obj, P, N, soft_copy(front, drawing_mask(front)), mirror_x=False)
     # One skin: the back's lit skin tone and shading depth follow the front's (measured on the
     # body texels each view owns outright, head and underwear excluded).
-    under, _, _ = underwear_mask(P, lm, False)
+    under, _, _ = underwear_mask(P, lm, body_name == "Female")  # the Female mask includes the bra band
     own = (head_w < 0.1) & (under < 0.5)
     colour_b = match_skin_tone(colour_b, own & (w_b > 0.9) & (N[:, 1] > 0.7), colour_f, own & (w_f > 0.9) & (-N[:, 1] > 0.7))
     total = np.clip(w_f + w_b, 0, 1)
@@ -1193,15 +1350,37 @@ def main():
     # pelvis, plus whatever the 3D briefs mask covers that came out grey.
     lum_b = luminance(body)
     sat_b = body.max(axis=1) - body.min(axis=1)
-    pelvis_z = lm.bone_head["pelvis"][2]
+    zones = garment_zones(lm, body_name)
     grey_b = (sat_b < 0.10) & (lum_b > 0.10) & (lum_b < 0.45)
-    cloth = grey_b & (P[:, 2] > pelvis_z - 0.30) & (P[:, 2] < pelvis_z + 0.12)
-    print("  3D briefs mask vs drawn garment: %.1f%% of mask texels are grey, %.1f%% of grey texels inside mask" % (
+    cloth = grey_b & in_zones(P[:, 2], zones)
+    side_limit = CLOTH_SIDE_FILL.get(body_name)
+    if side_limit:
+        on_mesh = np.abs(P).sum(axis=1) > 0  # the bake leaves off-island texels at the origin
+        for z0, z1 in zones:
+            piece = cloth & (P[:, 2] > z0) & (P[:, 2] < z1)
+            if piece.sum() < 1000:
+                continue
+            g0, g1 = np.percentile(P[piece, 2], [1, 99])  # the garment's own height range
+            in_zone = on_mesh & (P[:, 2] > g0 - 0.01) & (P[:, 2] < g1 + 0.01) & (np.abs(P[:, 0]) < 0.18)
+            side = in_zone & (np.abs(N[:, 1]) < side_limit)
+            src = in_zone & (np.abs(N[:, 1]) > 0.6) & ((w_f > 0.9) | (w_b > 0.9))
+            if side.sum() and src.sum():
+                near = fill_from_nearest(P, side, src, body)
+                t = pb.smoothstep(side_limit, side_limit - 0.15, np.abs(N[side, 1]))[:, None]
+                body[side] = body[side] * (1 - t) + near * t
+                print("  garment side fill z %.3f..%.3f: %d side texels from %d sources" % (g0, g1, side.sum(), src.sum()))
+        lum_b = luminance(body)
+        sat_b = body.max(axis=1) - body.min(axis=1)
+        grey_b = (sat_b < 0.10) & (lum_b > 0.10) & (lum_b < 0.45)
+        cloth = grey_b & in_zones(P[:, 2], zones)
+    print("  3D underwear mask vs drawn garment: %.1f%% of mask texels are grey, %.1f%% of grey texels inside mask" % (
         100 * grey_b[under > 0.5].mean(), 100 * (under[cloth] > 0.5).mean()))
-    if cloth.sum() > 1000:
-        body = even_cloth(body, P, cloth)
+    for z0, z1 in zones:  # each garment evened to its own grey
+        piece = cloth & (P[:, 2] > z0) & (P[:, 2] < z1)
+        if piece.sum() > 1000:
+            body = even_cloth(body, P, piece)
     if SKIN_EVEN > 0:
-        body = even_skin(body, P, N, head_w, lm, SKIN_EVEN, SKIN_EVEN_CELL)
+        body = even_skin(body, P, N, head_w, lm, SKIN_EVEN, SKIN_EVEN_CELL, chest_band)
 
     # --- Head: face drawings matched by landmarks (front + profile), back of the head from the back view.
     drawn = body
@@ -1242,7 +1421,7 @@ def main():
         front_skin = (-N[:, 1] > 0.6)
         face_px = front_skin & (head_w > 0.9) & (head_cov > 0.9) & (P[:, 2] > lm.chin[2])
         gain = tone_gain(head_col, face_px,
-                         body, front_skin & (head_w < 0.05) & (w_f > 0.8) & (P[:, 2] > 1.25) & (P[:, 2] < 1.45))
+                         body, front_skin & (head_w < 0.05) & (w_f > 0.8) & (P[:, 2] > chest_band[0]) & (P[:, 2] < chest_band[1]))
         print("  head -> body tone gain", np.round(gain, 3))
         head_col = np.clip(head_col * gain, 0, 1)
         lsum = sum(w for _, w in layer_views)
@@ -1253,7 +1432,7 @@ def main():
         # own level: even its low-frequency tone to the cheeks (1 cm local mean -> the lit cheek
         # median), keeping the grain and any ink. The real shading comes back from shadow_bands().
         zone = layers.pop("beard_region", None)
-        if zone is not None:
+        if zone is not None and (zone > 0.02).any():  # the Female has no beard region
             lum_h = luminance(head_col)
             cheek_px = face_px & (np.abs(P[:, 0]) > 0.03) & (np.abs(P[:, 0]) < 0.06) \
                 & (P[:, 2] > lm.mouth[2]) & (P[:, 2] < lm.eye_l[2] - 0.015) & (lum_h > 0.4)
@@ -1304,11 +1483,13 @@ def main():
     lum = luminance(out)
     ink = pb.smoothstep(0.30, 0.20, lum)
     sat = out.max(axis=1) - out.min(axis=1)
-    pelvis_z = lm.bone_head["pelvis"][2]
-    under = pb.smoothstep(0.12, 0.06, sat) * (P[:, 2] > pelvis_z - 0.30) * (P[:, 2] < pelvis_z + 0.12) * (lum > 0.12)
+    under = pb.smoothstep(0.12, 0.06, sat) * in_zones(P[:, 2], zones) * (lum > 0.12)
     masks = np.stack([np.clip((1 - ink) * (1 - under) * (1 - cavity), 0, 1), np.zeros_like(lum), under], axis=1)
     pb.save_png(pb.to_image(masks, valid, RES, 3), os.path.join(TEX_DIR, f"T_Body_{body_name}_Masks.png"), size=pb.MASK_RES)
     for key, value in layers.items():
+        if value.max() <= 0.0:  # the Female has no beard region: no empty layer file
+            print("  layer %s is empty, not written" % key)
+            continue
         pb.save_png(pb.to_image(value, valid, RES, 1),
                     os.path.join(TEX_DIR, f"T_Body_{body_name}_{key.capitalize()}.png"), size=pb.MASK_RES)
     pb.hook_up_materials(body_name, blend_path, colour_file=f"T_Body_{body_name}_BaseColor_Drawn.png")
